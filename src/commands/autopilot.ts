@@ -1045,6 +1045,38 @@ function ephemeralStartScriptPath(): string {
   return join(process.env.HOME || '', '.gbrain', 'start-autopilot.sh');
 }
 
+export type AutopilotInstallStatus = {
+  installed: boolean;
+  target?: 'macos' | 'linux-systemd' | 'linux-cron';
+  active?: boolean;
+};
+
+export function detectAutopilotInstallStatus(): AutopilotInstallStatus {
+  if (process.platform === 'darwin') {
+    return { installed: existsSync(plistPath()), target: 'macos' };
+  }
+
+  // Linux systemd is the canonical install path when the user service bus is
+  // available. Status must check the unit file before falling back to crontab;
+  // otherwise systemd installs report installed:false even while active (#667).
+  if (existsSync(systemdUnitPath())) {
+    let active: boolean | undefined;
+    try {
+      active = execSync('systemctl --user is-active gbrain-autopilot.service 2>/dev/null || true', { encoding: 'utf-8' }).trim() === 'active';
+    } catch { /* systemctl unavailable; unit file still proves install */ }
+    return { installed: true, target: 'linux-systemd', active };
+  }
+
+  try {
+    const crontab = execSync('crontab -l 2>/dev/null || true', { encoding: 'utf-8' });
+    if (crontab.includes('gbrain autopilot') || crontab.includes('autopilot-run.sh')) {
+      return { installed: true, target: 'linux-cron' };
+    }
+  } catch { /* no crontab */ }
+
+  return { installed: false };
+}
+
 export type InstallTarget = 'macos' | 'linux-systemd' | 'ephemeral-container' | 'linux-cron';
 
 /**
@@ -1523,20 +1555,13 @@ function showStatus(json: boolean) {
     lastLine = lines[lines.length - 1] || '';
   } catch { /* no log */ }
 
-  let installed = false;
-  if (process.platform === 'darwin') {
-    installed = existsSync(plistPath());
-  } else {
-    try {
-      const crontab = execSync('crontab -l 2>/dev/null || true', { encoding: 'utf-8' });
-      installed = crontab.includes('gbrain autopilot');
-    } catch { /* no crontab */ }
-  }
+  const status = detectAutopilotInstallStatus();
 
   if (json) {
-    console.log(JSON.stringify({ installed, last_log: lastLine }));
+    console.log(JSON.stringify({ ...status, last_log: lastLine }));
   } else {
-    console.log(`Autopilot: ${installed ? 'installed' : 'not installed'}`);
+    const suffix = status.target ? ` (${status.target}${status.active !== undefined ? `, ${status.active ? 'active' : 'inactive'}` : ''})` : '';
+    console.log(`Autopilot: ${status.installed ? 'installed' : 'not installed'}${suffix}`);
     if (lastLine) console.log(`Last log: ${lastLine}`);
   }
 }

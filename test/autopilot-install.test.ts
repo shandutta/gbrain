@@ -20,7 +20,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { detectInstallTarget } from '../src/commands/autopilot.ts';
+import { detectInstallTarget, detectAutopilotInstallStatus } from '../src/commands/autopilot.ts';
 
 let tmp: string;
 const envSnapshot: Record<string, string | undefined> = {};
@@ -97,5 +97,19 @@ describe('autopilot wrapper script — env source order (v0.36.1.x #966)', () =>
     // Both should appear inside writeWrapperScript's heredoc as `source ~/.foo`
     expect(src).toMatch(/source\s+~\/\.zshenv/);
     expect(src).toMatch(/source\s+~\/\.zshrc/);
+  });
+});
+
+describe('detectAutopilotInstallStatus', () => {
+  test('reports linux-systemd installed when the user unit exists', () => {
+    if (process.platform === 'darwin') return;
+
+    const unitDir = join(tmp, '.config', 'systemd', 'user');
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(join(unitDir, 'gbrain-autopilot.service'), '[Unit]\nDescription=GBrain Autopilot\n');
+
+    const status = detectAutopilotInstallStatus();
+    expect(status.installed).toBe(true);
+    expect(status.target).toBe('linux-systemd');
   });
 });
