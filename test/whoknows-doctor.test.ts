@@ -29,9 +29,11 @@ afterAll(() => {
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), 'whoknows-doctor-'));
   process.chdir(workDir);
+  process.env.GBRAIN_WHOKNOWS_FIXTURE_PATH = join(workDir, 'test/fixtures/whoknows-eval.jsonl');
 });
 
 function cleanup() {
+  delete process.env.GBRAIN_WHOKNOWS_FIXTURE_PATH;
   process.chdir(savedCwd);
   try {
     rmSync(workDir, { recursive: true, force: true });

@@ -456,6 +456,44 @@ describe('performSync dry-run never writes', () => {
     expect(typeof result.embedded).toBe('number');
   });
 
+  test('source up-to-date sync refreshes last_sync_at without advancing content', async () => {
+    const { performSync } = await import('../src/commands/sync.ts');
+    await engine.executeRaw(
+      `UPDATE sources SET name = 'Default', local_path = $1, last_sync_at = now() - interval '48 hours' WHERE id = 'default'`,
+      [repoPath],
+    );
+
+    const seeded = await performSync(engine, {
+      sourceId: 'default',
+      noPull: true,
+      noEmbed: true,
+      noExtract: true,
+    });
+    expect(seeded.status).toBe('first_sync');
+
+    await engine.executeRaw(
+      `UPDATE sources SET last_sync_at = now() - interval '48 hours' WHERE id = 'default'`,
+    );
+    const before = await engine.executeRaw<{ last_sync_at: Date }>(
+      `SELECT last_sync_at FROM sources WHERE id = 'default'`,
+    );
+
+    const result = await performSync(engine, {
+      sourceId: 'default',
+      noPull: true,
+      noEmbed: true,
+      noExtract: true,
+    });
+    expect(result.status).toBe('up_to_date');
+
+    const after = await engine.executeRaw<{ last_sync_at: Date }>(
+      `SELECT last_sync_at FROM sources WHERE id = 'default'`,
+    );
+    expect(new Date(after[0].last_sync_at).getTime()).toBeGreaterThan(
+      new Date(before[0].last_sync_at).getTime(),
+    );
+  });
+
   test('detached HEAD skips git pull and ingests local working-tree files', async () => {
     const { performSync } = await import('../src/commands/sync.ts');
     const seeded = await performSync(engine, {
