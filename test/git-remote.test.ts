@@ -26,7 +26,7 @@ const FAKE_GIT_MODE = join(FAKE_GIT_DIR, 'mode');
 
 function writeFakeGit(): void {
   mkdirSync(FAKE_GIT_DIR, { recursive: true });
-  // Mode file controls fake-git behavior: "ok" = exit 0, "fail" = exit 1.
+  // Mode file controls fake-git behavior.
   writeFileSync(FAKE_GIT_MODE, 'ok');
   // Per-invocation argv goes into argv.log (one JSON array per line).
   writeFileSync(FAKE_GIT_LOG, '');
@@ -34,6 +34,13 @@ function writeFakeGit(): void {
 # Fake git for git-remote.test.ts
 { printf '['; for arg in "$@"; do printf '%s,' "$(printf '%s' "$arg" | jq -Rs .)"; done; printf 'null]\\n'; } >> "${FAKE_GIT_LOG}"
 mode=$(cat "${FAKE_GIT_MODE}" 2>/dev/null || echo ok)
+if [[ "$*" == *"remote get-url origin"* ]]; then
+  case "$mode" in
+    local-origin) echo "${FAKE_GIT_DIR}/origin.git"; exit 0 ;;
+    file-origin) echo "file://${FAKE_GIT_DIR}/origin.git"; exit 0 ;;
+    https-origin) echo "https://github.com/example/repo.git"; exit 0 ;;
+  esac
+fi
 case "$mode" in
   fail) exit 1 ;;
   url-drift) echo "https://github.com/different/url" ;;
@@ -62,7 +69,7 @@ function clearArgvLog(): void {
   writeFileSync(FAKE_GIT_LOG, '');
 }
 
-function setMode(mode: 'ok' | 'fail' | 'url-drift' | 'url-match'): void {
+function setMode(mode: 'ok' | 'fail' | 'url-drift' | 'url-match' | 'local-origin' | 'file-origin' | 'https-origin'): void {
   writeFileSync(FAKE_GIT_MODE, mode);
 }
 
@@ -325,7 +332,9 @@ describe('pullRepo', () => {
     await withEnv({ PATH: fakePath() }, async () => {
       pullRepo(repo);
     });
-    const argv = readArgvLog()[0];
+    const argvLog = readArgvLog();
+    expect(argvLog[0]).toEqual(['-C', repo, 'remote', 'get-url', 'origin']);
+    const argv = argvLog[1];
     expect(argv[0]).toBe('-C');
     expect(argv[1]).toBe(repo);
     expect(argv.slice(2, 2 + GIT_SSRF_FLAGS.length)).toEqual([...GIT_SSRF_FLAGS]);
@@ -348,6 +357,36 @@ describe('pullRepo', () => {
     await withEnv({ PATH: fakePath() }, async () => {
       expect(() => pullRepo(repo)).toThrow(GitOperationError);
     });
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('allows file protocol only for existing local-origin pulls', async () => {
+    const repo = join(FAKE_GIT_DIR, 'pull-local-origin');
+    mkdirSync(repo, { recursive: true });
+    setMode('local-origin');
+    await withEnv({ PATH: fakePath() }, async () => {
+      pullRepo(repo);
+    });
+    const argvLog = readArgvLog();
+    expect(argvLog).toHaveLength(2);
+    expect(argvLog[0]).toEqual(['-C', repo, 'remote', 'get-url', 'origin']);
+    const pullArgv = argvLog[1];
+    expect(pullArgv).toContain('pull');
+    expect(pullArgv).toContain('protocol.file.allow=always');
+    expect(pullArgv).not.toContain('protocol.file.allow=never');
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('keeps file protocol disabled for https-origin pulls', async () => {
+    const repo = join(FAKE_GIT_DIR, 'pull-https-origin');
+    mkdirSync(repo, { recursive: true });
+    setMode('https-origin');
+    await withEnv({ PATH: fakePath() }, async () => {
+      pullRepo(repo);
+    });
+    const pullArgv = readArgvLog()[1];
+    expect(pullArgv).toContain('protocol.file.allow=never');
+    expect(pullArgv).not.toContain('protocol.file.allow=always');
     rmSync(repo, { recursive: true, force: true });
   });
 });

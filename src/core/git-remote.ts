@@ -201,11 +201,35 @@ export function cloneRepo(url: string, destDir: string, opts: CloneOpts = {}): v
 
 /** Pull a repo with --ff-only and the same SSRF-defensive flags as cloneRepo. */
 export function pullRepo(repoPath: string, opts: { timeoutMs?: number } = {}): void {
-  const args: string[] = ['-C', repoPath, ...GIT_SSRF_FLAGS, 'pull', ...GIT_SSRF_SUBCOMMAND_FLAGS, '--ff-only'];
+  const timeout = opts.timeoutMs ?? 300_000;
+  let remoteUrl = '';
+  try {
+    remoteUrl = execFileSync('git', ['-C', repoPath, 'remote', 'get-url', 'origin'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10_000,
+      env: { ...process.env, ...GIT_ENV },
+    }).toString().trim();
+  } catch {
+    // Preserve existing behavior: a missing/unreadable origin should not mask the
+    // real pull error path below.
+  }
+
+  const isLocalOrigin = remoteUrl.startsWith('/') || remoteUrl.startsWith('file://');
+  const gitConfigFlags = isLocalOrigin
+    ? GIT_SSRF_FLAGS.flatMap((flag, idx, flags) => {
+        if (flag === '-c' && flags[idx + 1] === 'protocol.file.allow=never') {
+          return ['-c', 'protocol.file.allow=always'];
+        }
+        if (flag === 'protocol.file.allow=never') return [];
+        return [flag];
+      })
+    : [...GIT_SSRF_FLAGS];
+
+  const args: string[] = ['-C', repoPath, ...gitConfigFlags, 'pull', ...GIT_SSRF_SUBCOMMAND_FLAGS, '--ff-only'];
   try {
     execFileSync('git', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: opts.timeoutMs ?? 300_000,
+      timeout,
       env: { ...process.env, ...GIT_ENV },
     });
   } catch (e) {
