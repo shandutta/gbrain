@@ -242,6 +242,8 @@ export interface SynthesizePhaseOpts {
    * the synthesize loop. Caller must opt in explicitly.
    */
   bypassDreamGuard?: boolean;
+  /** Source whose cycle owns any synthesize output. Defaults to `default`. */
+  sourceId?: string;
 }
 
 export async function runPhaseSynthesize(
@@ -267,6 +269,8 @@ export async function runPhaseSynthesize(
     opts.brainDir = resolve(opts.brainDir);
   }
   try {
+    const sourceId = opts.sourceId ?? 'default';
+    validateSourceId(sourceId);
     const config = await loadSynthConfig(engine);
 
     // Allow ad-hoc --input to run even when config is disabled.
@@ -464,6 +468,7 @@ export async function runPhaseSynthesize(
           model: subagentModel,
           max_turns: 30,
           allowed_slug_prefixes: allowedSlugPrefixes,
+          source_id: sourceId,
         };
         // Idempotency key parity:
         //   - single-chunk → legacy `dream:synth:<filePath>:<hash16>` (byte-
@@ -523,7 +528,7 @@ export async function runPhaseSynthesize(
     // even if Sonnet drops the chunk suffix.
     // v0.32.8: refs carry source_id so reverseWriteRefs picks the correct
     // (source, slug) row (currently always 'default' from subagent put_page).
-    const writtenRefs = await collectChildPutPageSlugs(engine, childIds, chunkInfo);
+    const writtenRefs = await collectChildPutPageSlugs(engine, childIds, chunkInfo, sourceId);
 
     // Dual-write: reverse-render each DB row → markdown file.
     const reverseWriteCount = await reverseWriteRefs(engine, opts.brainDir, writtenRefs);
@@ -535,18 +540,28 @@ export async function runPhaseSynthesize(
     // Back-compat: writeSummaryPage takes string[] for display; map refs back to slugs.
     const writtenSlugs = writtenRefs.map(r => r.slug);
     if (SUMMARY_SLUG_RE.test(summarySlug)) {
-      await writeSummaryPage(engine, opts.brainDir, summarySlug, summaryDate, writtenSlugs, childOutcomes);
+      await writeSummaryPage(engine, opts.brainDir, summarySlug, summaryDate, writtenSlugs, childOutcomes, sourceId);
     }
 
-    // Write completion timestamp ON SUCCESS only.
-    await engine.setConfig('dream.synthesize.last_completion_ts', new Date().toISOString());
+    // Write completion timestamp below only after verifying at least one
+    // submitted child actually completed. A fully failed/timeout batch must be
+    // retryable and must not poison the cooldown.
 
     const ms = Date.now() - start;
     const submittedTranscripts = worthProcessing.length - skipReports.length;
+    const completedChildren = childOutcomes.filter(c => c.status === 'completed').length;
+    const failedChildren = childOutcomes.length - completedChildren;
+    if (childIds.length > 0 && completedChildren === 0) {
+      return failed(makeError('InternalError', 'SYNTH_CHILDREN_NO_COMPLETIONS',
+        `all ${childIds.length} synthesize child job(s) failed or timed out; not setting cooldown`));
+    }
+    await engine.setConfig('dream.synthesize.last_completion_ts', new Date().toISOString());
     return ok(`${submittedTranscripts} transcript(s) synthesized in ${(ms / 1000).toFixed(1)}s`, {
       transcripts_discovered: transcripts.length,
       transcripts_processed: submittedTranscripts,
       pages_written: writtenSlugs.length,
+      children_completed: completedChildren,
+      children_failed_or_timeout: failedChildren,
       // v0.29: emit the slug list so the recompute_emotional_weight phase can
       // union with sync's pagesAffected and recompute weights for every page
       // synthesize wrote in this cycle.
@@ -1011,6 +1026,7 @@ async function collectChildPutPageSlugs(
   engine: BrainEngine,
   childIds: number[],
   chunkInfo: Map<number, { idx: number; hash6: string }>,
+  sourceId = 'default',
 ): Promise<Array<{ slug: string; source_id: string }>> {
   if (childIds.length === 0) return [];
   // Raw fetch — NO SELECT DISTINCT. Preserves per-child slug duplicates so
@@ -1039,7 +1055,7 @@ async function collectChildPutPageSlugs(
     const ci = chunkInfo.get(r.job_id);
     rewritten.add(ci ? rewriteChunkedSlug(r.slug, ci.hash6, ci.idx) : r.slug);
   }
-  return Array.from(rewritten).sort().map(slug => ({ slug, source_id: 'default' }));
+  return Array.from(rewritten).sort().map(slug => ({ slug, source_id: sourceId }));
 }
 
 /**
@@ -1134,6 +1150,7 @@ async function writeSummaryPage(
   summaryDate: string,
   writtenSlugs: string[],
   childOutcomes: Array<{ jobId: number; status: string }>,
+  sourceId: string,
 ): Promise<void> {
   const completed = childOutcomes.filter(c => c.status === 'completed').length;
   const failed = childOutcomes.length - completed;
@@ -1177,11 +1194,13 @@ async function writeSummaryPage(
     compiled_truth: parsed.compiled_truth,
     timeline: parsed.timeline,
     frontmatter: parsed.frontmatter,
-  });
+  }, { sourceId });
 
   // Also write to disk (orchestrator dual-write).
   try {
-    const filePath = join(brainDir, `${summarySlug}.md`);
+    const filePath = sourceId === 'default'
+      ? join(brainDir, `${summarySlug}.md`)
+      : join(brainDir, '.sources', sourceId, `${summarySlug}.md`);
     mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, fullMarkdown, 'utf8');
   } catch (e) {

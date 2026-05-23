@@ -118,7 +118,9 @@ describe('writeFactsAbsorbLog — ingest_log row shape', () => {
     expect(FACTS_ABSORB_REASONS).toContain('queue_shutdown');
     expect(FACTS_ABSORB_REASONS).toContain('embed_failure');
     expect(FACTS_ABSORB_REASONS).toContain('pipeline_error');
-    expect(FACTS_ABSORB_REASONS.length).toBe(6);
+    expect(FACTS_ABSORB_REASONS).toContain('gateway_unavailable');
+    expect(FACTS_ABSORB_REASONS).toContain('no_candidates');
+    expect(FACTS_ABSORB_REASONS.length).toBe(8);
   });
 });
 

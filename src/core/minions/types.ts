@@ -481,6 +481,13 @@ export interface SubagentHandlerData {
    * Read by audit + diagnostic surfaces (jobs get / dashboard).
    */
   self_fix_cluster?: string;
+  /**
+   * Source id that brain tools should write/read against. Defaults to
+   * `default` for legacy single-source jobs. Dream cycles set this from
+   * `gbrain dream --source <id>` so subagent writes stay attributable to the
+   * source whose cycle submitted them.
+   */
+  source_id?: string;
 }
 
 /**
