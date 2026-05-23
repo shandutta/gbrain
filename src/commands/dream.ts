@@ -50,6 +50,8 @@ interface DreamArgs {
   from: string | null;
   /** v0.21: backfill range end (YYYY-MM-DD). */
   to: string | null;
+  /** v0.40.5+: source-scoped cycle freshness target. */
+  sourceId: string | null;
   /**
    * v0.23.2: disable the synthesize phase's self-consumption guard.
    * Long-form flag name to discourage casual use; loud stderr warning fires when set.
@@ -145,6 +147,13 @@ function parseArgs(args: string[]): DreamArgs {
     process.exit(2);
   }
 
+  const sourceIdx = args.indexOf('--source');
+  const sourceId = sourceIdx !== -1 ? args[sourceIdx + 1] ?? null : null;
+  if (sourceIdx !== -1 && !sourceId) {
+    console.error('--source requires a source id');
+    process.exit(2);
+  }
+
   // --input + --date / --from / --to is incoherent: --input is a single
   // file, the date filters scan a directory.
   if (inputFile && (date || from || to)) {
@@ -225,6 +234,7 @@ function parseArgs(args: string[]): DreamArgs {
     date,
     from,
     to,
+    sourceId,
     bypassDreamGuard: args.includes('--unsafe-bypass-dream-guard'),
     source,
     drain,
@@ -353,6 +363,7 @@ Examples:
   gbrain dream
   gbrain dream --dry-run --json
   gbrain dream --phase lint
+  gbrain dream --source default --json
   gbrain dream --phase synthesize --input ~/transcripts/2026-04-25.txt
   gbrain dream --phase synthesize --from 2026-04-01 --to 2026-04-25
   0 2 * * * gbrain dream --json         # nightly via cron

@@ -850,13 +850,31 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
         const FULL_CYCLE_FLOOR_MIN = 60;
         const minutesSinceLastFull = (Date.now() - lastFullCycleAt) / 60000;
 
+        // Doctor checks sources.config.last_full_cycle_at, so autopilot
+        // must promote a stale/missing per-source full-cycle timestamp
+        // into a real autopilot-cycle dispatch instead of staying in
+        // targeted sync/extract mode forever. This mirrors
+        // `gbrain dream --source`.
+        let staleFullCycleSources: string[] = [];
+        try {
+          const { isSourceStale } = await import('./autopilot-fanout.ts');
+          const sources = await engine.listAllSources({ localPathOnly: true });
+          const now = Date.now();
+          staleFullCycleSources = sources
+            .filter(src => isSourceStale(src, now, FULL_CYCLE_FLOOR_MIN))
+            .map(src => src.id);
+        } catch (e) {
+          logError('dispatch.cycle-freshness-gate', e);
+        }
+
         const shouldFullCycle =
+          staleFullCycleSources.length > 0 ||
           (score >= 95 && plan.length === 0 && minutesSinceLastFull >= FULL_CYCLE_FLOOR_MIN) ||
           plan.length > 3 ||
           estTotal >= 300 ||
           score < 70;
 
-        const shouldSleep = score >= 95 && plan.length === 0 && minutesSinceLastFull < FULL_CYCLE_FLOOR_MIN;
+        const shouldSleep = staleFullCycleSources.length === 0 && score >= 95 && plan.length === 0 && minutesSinceLastFull < FULL_CYCLE_FLOOR_MIN;
 
         if (shouldSleep) {
           if (jsonMode) {
@@ -892,12 +910,14 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
               legacy_fallback: result.legacy_fallback,
               fanout_max: fanoutMax,
               score,
+              stale_full_cycle_sources: staleFullCycleSources,
             }) + '\n');
           } else if (!result.legacy_fallback) {
             console.log(
               `[dispatch] fanout: ${result.dispatched.length} dispatched, ` +
               `${result.skipped_fresh.length} fresh, ${result.skipped_cap.length} capped ` +
-              `(score=${score}, max=${fanoutMax})`,
+              `(score=${score}, max=${fanoutMax}` +
+              `${staleFullCycleSources.length > 0 ? `, stale_full_cycle=${staleFullCycleSources.join(',')}` : ''})`,
             );
           }
         } else {
