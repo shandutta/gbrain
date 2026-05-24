@@ -294,6 +294,20 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
             output: { ok: true, nested: { missing: undefined }, list: [1, undefined] },
             isError: false,
           } as any,
+          {
+            type: 'tool-result',
+            toolCallId: 'call-deepseek-error',
+            toolName: 'lookup',
+            input: { q: 'boom' },
+            output: 'upstream timeout',
+            isError: true,
+          } as any,
+          {
+            type: 'tool-result',
+            toolCallId: 'call-deepseek-weird',
+            toolName: 'lookup',
+            output: { fn: () => 'nope', big: 12n, symbol: Symbol('x') },
+          } as any,
         ],
       },
     ]);
@@ -308,9 +322,78 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
             toolName: 'lookup',
             output: { type: 'json', value: { ok: true, nested: { missing: null }, list: [1, null] } },
           },
+          {
+            type: 'tool-result',
+            toolCallId: 'call-deepseek-error',
+            toolName: 'lookup',
+            output: { type: 'json', value: { error: 'upstream timeout' } },
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'call-deepseek-weird',
+            toolName: 'lookup',
+            output: { type: 'json', value: { fn: '() => "nope"', big: '12', symbol: 'Symbol(x)' } },
+          },
         ],
       },
     ]);
+  });
+
+  it('continues a multi-tool turn when one tool errors and preserves one result per provider call', async () => {
+    let chatCalls = 0;
+    __setChatTransportForTests(async () => {
+      chatCalls++;
+      if (chatCalls === 1) {
+        return {
+          text: '',
+          blocks: [
+            { type: 'tool-call', toolCallId: 'tc-ok', toolName: 'ok', input: { n: 1 } },
+            { type: 'tool-call', toolCallId: 'tc-bad', toolName: 'bad', input: { n: 2 } },
+            { type: 'tool-call', toolCallId: 'tc-missing', toolName: 'missing', input: { n: 3 } },
+          ] as ChatBlock[],
+          stopReason: 'tool_calls',
+          usage: { input_tokens: 3, output_tokens: 3, cache_read_tokens: 0, cache_creation_tokens: 0 },
+          model: 'deepseek:deepseek-v4-flash',
+          providerId: 'deepseek',
+        };
+      }
+      return {
+        text: 'handled mixed tool results',
+        blocks: [{ type: 'text', text: 'handled mixed tool results' }] as ChatBlock[],
+        stopReason: 'end',
+        usage: { input_tokens: 4, output_tokens: 4, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'deepseek:deepseek-v4-flash',
+        providerId: 'deepseek',
+      };
+    });
+
+    const persistedTurns: ChatBlock[][] = [];
+    const failed: string[] = [];
+    const result = await toolLoop({
+      initialMessages: [{ role: 'user', content: 'run all tools' }],
+      tools: [
+        { name: 'ok', description: 'ok', inputSchema: { type: 'object' } },
+        { name: 'bad', description: 'bad', inputSchema: { type: 'object' } },
+      ],
+      toolHandlers: new Map([
+        ['ok', { idempotent: true, async execute() { return { ok: true }; } }],
+        ['bad', { idempotent: true, async execute() { throw new Error('adversarial failure'); } }],
+      ]),
+      onToolCallFailed: async (gbrainToolUseId, error) => {
+        failed.push(`${gbrainToolUseId}:${error}`);
+      },
+      onToolResultsTurn: async (_turnIdx, _msgIdx, blocks) => {
+        persistedTurns.push(blocks);
+      },
+    });
+
+    expect(result.stopReason).toBe('end');
+    expect(result.finalText).toBe('handled mixed tool results');
+    expect(persistedTurns).toHaveLength(1);
+    const firstTurn = persistedTurns[0].filter((b): b is Extract<ChatBlock, { type: 'tool-result' }> => b.type === 'tool-result');
+    expect(firstTurn.map(b => b.toolCallId)).toEqual(['tc-ok', 'tc-bad', 'tc-missing']);
+    expect(firstTurn.map(b => b.isError === true)).toEqual([false, true, true]);
+    expect(failed).toEqual(['inline-0-1:adversarial failure']);
   });
 
   it('disables DeepSeek V4 thinking mode for provider-neutral tool-loop compatibility', () => {

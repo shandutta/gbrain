@@ -11,9 +11,11 @@ import { describe, test, expect, beforeEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   discoverTranscripts,
   readSingleTranscript,
+  sanitizeTranscriptContentForStorage,
   compileExcludePatterns,
   isDreamOutput,
   DREAM_OUTPUT_MARKER_RE,
@@ -199,6 +201,19 @@ describe('readSingleTranscript', () => {
     const path = makeTranscript('random-basename.txt', 'a'.repeat(3000));
     const t = readSingleTranscript(path, { minChars: 1000 });
     expect(t!.inferredDate).toBeNull();
+  });
+
+  test('sanitizes NUL bytes before transcript content is stored or queued', () => {
+    const raw = 'durable idea before\u0000after ' + 'x'.repeat(3000);
+    const path = makeTranscript('nul-byte.txt', raw);
+    const t = readSingleTranscript(path, { minChars: 1000 });
+    expect(t).not.toBeNull();
+    expect(t!.content).toContain('before�after');
+    expect(t!.content).not.toContain('\u0000');
+    // The raw byte stream still controls idempotency, so edits involving NULs
+    // don't collapse onto the sanitized content hash.
+    const sanitizedHash = createHash('sha256').update(sanitizeTranscriptContentForStorage(raw), 'utf8').digest('hex');
+    expect(t!.contentHash).not.toBe(sanitizedHash);
   });
 });
 

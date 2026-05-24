@@ -145,6 +145,16 @@ function hashContent(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
+/**
+ * PostgreSQL text/jsonb cannot store NUL bytes (U+0000). Real transcripts can
+ * contain control chars from STT/terminal dumps, and adversarial inputs can
+ * deliberately include them. Hash the raw file for idempotency, but sanitize the
+ * content that may flow into DB-backed verdicts/jobs/prompts.
+ */
+export function sanitizeTranscriptContentForStorage(text: string): string {
+  return text.replace(/\u0000/g, '�');
+}
+
 function isInDateRange(date: string | null, opts: DiscoverOpts): boolean {
   if (!opts.date && !opts.from && !opts.to) return true;
   if (!date) return false; // file has no inferable date but a filter is active
@@ -234,6 +244,8 @@ export function discoverTranscripts(opts: DiscoverOpts): DiscoveredTranscript[] 
       } catch {
         continue;
       }
+      const rawContent = content;
+      content = sanitizeTranscriptContentForStorage(content);
       if (content.length < minChars) continue;
       if (isDreamOutput(content, bypass)) {
         process.stderr.write(`[dream] skipped ${baseName}: dream_generated marker (self-consumption guard)\n`);
@@ -243,7 +255,7 @@ export function discoverTranscripts(opts: DiscoverOpts): DiscoveredTranscript[] 
 
       results.push({
         filePath,
-        contentHash: hashContent(content),
+        contentHash: hashContent(rawContent),
         content,
         basename: baseName,
         inferredDate,
@@ -274,6 +286,8 @@ export function readSingleTranscript(
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`could not read transcript at ${filePath}: ${msg}`);
   }
+  const rawContent = content;
+  content = sanitizeTranscriptContentForStorage(content);
   if (content.length < minChars) return null;
   if (isDreamOutput(content, bypass)) {
     const ext = filePath.endsWith('.md') ? '.md' : '.txt';
@@ -287,7 +301,7 @@ export function readSingleTranscript(
   const dateMatch = DATE_RE.exec(baseName);
   return {
     filePath,
-    contentHash: hashContent(content),
+    contentHash: hashContent(rawContent),
     content,
     basename: baseName,
     inferredDate: dateMatch ? dateMatch[1] : null,
