@@ -193,7 +193,7 @@ describe('think gateway adapter — graceful fallback shape', () => {
     expect(m.role).toBe('assistant');
     expect(m.content[0].type).toBe('text');
     expect(m.content[0].text).toContain('no LLM available');
-    expect(m.content[0].text).toContain('gbrain config');
+    expect(m.content[0].text).toContain('configure that provider API key');
     expect(m.usage.input_tokens).toBe(0);
     expect(m.usage.output_tokens).toBe(0);
     expect(m.stop_reason).toBe('end_turn');

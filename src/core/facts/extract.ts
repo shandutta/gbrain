@@ -250,7 +250,7 @@ export async function extractFactsFromTurn(input: ExtractInput): Promise<Extract
     facts.push({
       fact: factText,
       kind,
-      entity_slug: candidate.entity ?? null,
+      entity_slug: normalizeExtractedEntitySlug(candidate.entity),
       source: input.source,
       source_session: input.sessionId ?? null,
       confidence,
@@ -315,6 +315,21 @@ export function parseExtractorJson(raw: string): RawExtracted[] | null {
     if (sub) return sub;
   }
   return null;
+}
+
+export function normalizeExtractedEntitySlug(entity: string | null | undefined): string | null {
+  if (typeof entity !== 'string') return null;
+  const trimmed = entity.trim();
+  if (trimmed.length === 0) return null;
+
+  // Some providers occasionally stringify JSON null ("null") or emit
+  // English null-likes for unowned facts. Storing those as real slugs wedges
+  // the v0.32.2 fence-backfill guard because row_num/source_markdown_slug are
+  // intentionally NULL for unparented hot-memory facts. Treat them as the
+  // intended SQL NULL at the parser boundary.
+  if (/^(null|none|n\/a|unknown|undefined)$/i.test(trimmed)) return null;
+
+  return trimmed;
 }
 
 function tryArrayShape(s: string): RawExtracted[] | null {

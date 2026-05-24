@@ -443,7 +443,7 @@ export async function runThink(
       // Degrade gracefully: return the gather without synthesis. Better than throwing.
       return {
         question: opts.question,
-        answer: '(no LLM available — set ANTHROPIC_API_KEY or pass `client`)',
+        answer: '(no LLM available for the configured model — configure that provider API key or choose an available model)',
         citations: [],
         gaps: ['no LLM available; gather succeeded but synthesis skipped'],
         pagesGathered: gather.pages.length,
@@ -748,7 +748,7 @@ function buildGracefulMessage(modelStr: string): {
     type: 'message',
     role: 'assistant',
     model: modelStr,
-    content: [{ type: 'text', text: '(no LLM available — set anthropic_api_key via gbrain config or ANTHROPIC_API_KEY env)' }],
+    content: [{ type: 'text', text: `(no LLM available for ${modelStr} — configure that provider API key or choose an available model)` }],
     usage: { input_tokens: 0, output_tokens: 0 },
     stop_reason: 'end_turn',
   };

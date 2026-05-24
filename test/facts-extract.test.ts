@@ -16,9 +16,16 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { extractFactsFromTurn, parseExtractorJson } from '../src/core/facts/extract.ts';
+import { extractFactsFromTurn, parseExtractorJson, normalizeExtractedEntitySlug } from '../src/core/facts/extract.ts';
 
 describe('extractFactsFromTurn', () => {
+  test('normalizes provider stringified-null entity slugs before storage', () => {
+    for (const value of ['null', ' NULL ', 'none', 'n/a', 'unknown', 'undefined', '', '   ']) {
+      expect(normalizeExtractedEntitySlug(value)).toBeNull();
+    }
+    expect(normalizeExtractedEntitySlug('people/alice')).toBe('people/alice');
+  });
+
   test('empty turn returns no facts', async () => {
     const r = await extractFactsFromTurn({ turnText: '', source: 'test' });
     expect(r).toEqual([]);
