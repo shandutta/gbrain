@@ -6,6 +6,8 @@ import {
   resetGateway,
   type ChatBlock,
   type ToolHandler,
+  __providerSpecificChatOptionsForTests,
+  __normalizeMessagesForPromptForTests,
 } from '../../src/core/ai/gateway.ts';
 
 describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () => {
@@ -139,6 +141,9 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
       onToolCallComplete: async (gbrainToolUseId, _output) => {
         events.push(`onToolCallComplete(${gbrainToolUseId})`);
       },
+      onToolResultsTurn: async (turnIdx, _msgIdx, blocks) => {
+        events.push(`onToolResultsTurn(${turnIdx}, ${blocks.length})`);
+      },
     });
 
     // Write-ordering invariant: assistant persisted BEFORE pending tool row;
@@ -147,7 +152,8 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
     expect(events[1]).toMatch(/onToolCallStart\(turn=0, ordinal=0, name=echo/);
     expect(events[2]).toMatch(/execute/);
     expect(events[3]).toMatch(/onToolCallComplete\(gb-0-0\)/);
-    expect(events[4]).toBe('onAssistantTurn(1)'); // final assistant turn
+    expect(events[4]).toBe('onToolResultsTurn(0, 1)');
+    expect(events[5]).toBe('onAssistantTurn(1)'); // final assistant turn
   });
 
   it('replay short-circuits a complete prior tool execution', async () => {
@@ -273,5 +279,48 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
     expect(toolWasCalled).toBe(false);
     expect(result.stopReason).toBe('refusal');
     expect(result.finalText).toBe('I cannot help with that');
+  });
+
+  it('normalizes provider-neutral tool results before replaying them as model messages', () => {
+    const normalized = __normalizeMessagesForPromptForTests([
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call-deepseek-json-safe',
+            toolName: 'lookup',
+            input: { q: 'nested undefineds' },
+            output: { ok: true, nested: { missing: undefined }, list: [1, undefined] },
+            isError: false,
+          } as any,
+        ],
+      },
+    ]);
+
+    expect(normalized).toEqual([
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call-deepseek-json-safe',
+            toolName: 'lookup',
+            output: { type: 'json', value: { ok: true, nested: { missing: null }, list: [1, null] } },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('disables DeepSeek V4 thinking mode for provider-neutral tool-loop compatibility', () => {
+    expect(__providerSpecificChatOptionsForTests('deepseek', 'deepseek-v4-flash')).toEqual({
+      thinking: { type: 'disabled' },
+    });
+    expect(__providerSpecificChatOptionsForTests('deepseek', 'deepseek-v4-pro')).toEqual({
+      thinking: { type: 'disabled' },
+    });
+    expect(__providerSpecificChatOptionsForTests('deepseek', 'deepseek-chat')).toEqual({});
+    expect(__providerSpecificChatOptionsForTests('anthropic', 'claude-sonnet-4-6')).toEqual({});
   });
 });

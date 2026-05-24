@@ -778,13 +778,18 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
     });
   }
 
-  // Convert prior Anthropic-shape messages → ChatMessage with ChatBlock content.
-  // v1 rows store Anthropic content blocks ({type:'tool_use'|'tool_result'|...});
-  // we adapt them to ChatBlock shape (type: 'tool-call' | 'tool-result' | 'text').
-  const priorChatMessages: ChatMessage[] = priorMessages.map(m => ({
-    role: m.role as 'user' | 'assistant',
-    content: adaptContentBlocksToChatBlocks(m.content_blocks),
-  }));
+  // Convert prior persisted messages → ChatMessage with ChatBlock content.
+  // Tool-result rows are stored as role='user' for the legacy DB CHECK
+  // constraint, but must be replayed as role='tool' for Vercel AI SDK / OpenAI-
+  // compatible providers; otherwise retrying a tool loop after one completed
+  // tool turn produces "missing tool results" or ModelMessage schema errors.
+  const priorChatMessages: ChatMessage[] = priorMessages.map(m => {
+    const content = adaptContentBlocksToChatBlocks(m.content_blocks);
+    const role = Array.isArray(content) && content.length > 0 && content.every(b => b.type === 'tool-result')
+      ? 'tool'
+      : (m.role as 'user' | 'assistant');
+    return { role, content } as ChatMessage;
+  });
 
   // Initial seed message if no prior state.
   const initialMessages: ChatMessage[] = priorChatMessages.length === 0
@@ -904,6 +909,20 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
          WHERE gbrain_tool_use_id::text = $2`,
         [errorMsg, gbrainToolUseId],
       );
+    },
+    onToolResultsTurn: async (_turnIdx, messageIdx, blocks) => {
+      await persistMessage(engine, ctx.id, {
+        message_idx: messageIdx,
+        // Legacy schema only allows user/assistant. This row is semantically a
+        // provider-neutral tool message; replay adaptation restores role='tool'.
+        role: 'user',
+        content_blocks: blocks as unknown as ContentBlock[],
+        tokens_in: null,
+        tokens_out: null,
+        tokens_cache_read: null,
+        tokens_cache_create: null,
+        model: null,
+      });
     },
     onHeartbeat: heartbeat,
   });

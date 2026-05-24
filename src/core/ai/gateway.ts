@@ -2476,6 +2476,67 @@ export function probeChatModel(modelStr: string): ChatModelProbe {
   return { ok: true };
 }
 
+function toJsonSafeValue(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.map(toJsonSafeValue);
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = toJsonSafeValue(v);
+    }
+    return out;
+  }
+  return String(value);
+}
+
+function normalizeToolResultForPrompt(block: ChatBlock): ChatBlock {
+  if (block.type !== 'tool-result') return block;
+  const raw = block.isError === true
+    ? { error: block.output }
+    : block.output;
+  const output = raw && typeof raw === 'object' && 'type' in (raw as Record<string, unknown>) && 'value' in (raw as Record<string, unknown>)
+    ? { ...(raw as Record<string, unknown>), value: toJsonSafeValue((raw as Record<string, unknown>).value) }
+    : typeof raw === 'string'
+      ? { type: 'text', value: raw }
+      : { type: 'json', value: toJsonSafeValue(raw) };
+  // AI SDK ModelMessage schema for role='tool' accepts only
+  // {type, toolCallId, toolName, output, providerOptions}; GBrain's internal
+  // ChatBlock may carry input/isError for audit/replay, but those fields make
+  // prompt validation fail before the provider call.
+  return {
+    type: 'tool-result',
+    toolCallId: block.toolCallId,
+    toolName: block.toolName,
+    output,
+  } as ChatBlock;
+}
+
+function normalizeMessagesForPrompt(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map(message => {
+    if (!Array.isArray(message.content) || message.role !== 'tool') return message;
+    return { ...message, content: message.content.map(normalizeToolResultForPrompt) };
+  });
+}
+
+export function __normalizeMessagesForPromptForTests(messages: ChatMessage[]): ChatMessage[] {
+  return normalizeMessagesForPrompt(messages);
+}
+
+export function __providerSpecificChatOptionsForTests(providerId: string, modelId: string): Record<string, any> {
+  // DeepSeek V4 defaults to thinking mode. In tool loops, the API requires
+  // provider-specific `reasoning_content` replay on the next turn; the AI SDK
+  // does not preserve that field in our provider-neutral transcript. Disable
+  // thinking for now so V4 Flash/Pro remain safe, OpenAI-compatible tool
+  // callers. `deepseek-chat` is already the non-thinking compatibility alias,
+  // but explicit V4 model IDs need the extra body.
+  if (providerId === 'deepseek' && /^deepseek-v4-(flash|pro)$/.test(modelId)) {
+    return { thinking: { type: 'disabled' } };
+  }
+  return {};
+}
+
 async function resolveChatProvider(modelStr: string): Promise<{ model: any; recipe: Recipe; modelId: string }> {
   const { parsed, recipe } = resolveRecipe(modelStr);
   assertTouchpoint(recipe, 'chat', parsed.modelId, getExtendedModelsForProvider(parsed.providerId));
@@ -2731,6 +2792,13 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
   }, {} as Record<string, any>);
 
   const providerOptions: Record<string, any> = {};
+  const specificOptions = __providerSpecificChatOptionsForTests(recipe.id, modelId);
+  if (Object.keys(specificOptions).length > 0) {
+    providerOptions[recipe.id] = {
+      ...(providerOptions[recipe.id] ?? {}),
+      ...specificOptions,
+    };
+  }
   if (useCache) {
     providerOptions.anthropic = { cacheControl: { type: 'ephemeral' } };
   }
@@ -2755,7 +2823,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
     const result = await generateText({
       model,
       system: opts.system,
-      messages: toModelMessages(opts.messages) as any,
+      messages: toModelMessages(normalizeMessagesForPrompt(opts.messages)) as any,
       tools: opts.tools && opts.tools.length > 0 ? tools : undefined,
       maxOutputTokens: opts.maxTokens ?? 4096,
       // v0.42.20.0 — default a chat timeout (composes with the caller's signal,
@@ -2908,6 +2976,8 @@ export interface ToolLoopOpts {
   ) => Promise<{ gbrainToolUseId: string }>;
   onToolCallComplete?: (gbrainToolUseId: string, output: unknown) => Promise<void>;
   onToolCallFailed?: (gbrainToolUseId: string, error: string) => Promise<void>;
+  /** Persist the synthetic provider-neutral tool-result message after all tools in a turn settle. */
+  onToolResultsTurn?: (turnIdx: number, messageIdx: number, blocks: ChatBlock[]) => Promise<void>;
 
   /** Optional per-call heartbeat for observability. */
   onHeartbeat?: (event: string, data: Record<string, unknown>) => void;
@@ -3131,10 +3201,13 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
 
     if (stopReason === 'aborted') break;
 
-    // Feed all tool results back as a single user message.
-    const userMessageIdx = messageIdx++;
-    void userMessageIdx;
-    messages.push({ role: 'user', content: toolResultBlocks });
+    // Feed all tool results back as a single tool message. Persist the same
+    // provider-neutral result blocks for crash/retry replay; the subagent DB
+    // still stores this row as role='user' for the legacy check constraint, but
+    // read-time adaptation restores role='tool'.
+    const toolMessageIdx = messageIdx++;
+    await opts.onToolResultsTurn?.(turnIdx, toolMessageIdx, toolResultBlocks);
+    messages.push({ role: 'tool', content: toolResultBlocks });
 
     turnIdx++;
   }
