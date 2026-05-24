@@ -5,6 +5,7 @@ import {
   configureGateway,
   resetGateway,
   type ChatBlock,
+  type ChatMessage,
   type ToolHandler,
   __providerSpecificChatOptionsForTests,
   __normalizeMessagesForPromptForTests,
@@ -396,6 +397,94 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
     expect(failed).toEqual(['inline-0-1:adversarial failure']);
   });
 
+  it('is cycle-safe when tool outputs contain circular objects or exotic values', () => {
+    const circular: any = { name: 'root', nested: { bad: undefined }, big: 12n, fn: () => 'x', sym: Symbol('s') };
+    circular.self = circular;
+    circular.items = [circular];
+
+    const normalized = __normalizeMessagesForPromptForTests([
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'tc-cycle',
+            toolName: 'cycle_tool',
+            output: { type: 'json', value: circular },
+            input: circular,
+          },
+        ],
+      },
+    ]);
+
+    const block = (normalized[0].content as ChatBlock[])[0] as Extract<ChatBlock, { type: 'tool-result' }>;
+    expect(block).toEqual({
+      type: 'tool-result',
+      toolCallId: 'tc-cycle',
+      toolName: 'cycle_tool',
+      output: {
+        type: 'json',
+        value: {
+          name: 'root',
+          nested: { bad: null },
+          big: '12',
+          fn: '() => "x"',
+          sym: 'Symbol(s)',
+          self: '[Circular]',
+          items: ['[Circular]'],
+        },
+      },
+    });
+  });
+
+  it('survives large malformed-input tool calls without corrupting the next replay turn', async () => {
+    let callCount = 0;
+    let secondTurnMessages: ChatMessage[] | null = null;
+    const giantInput = 'x'.repeat(64_000);
+    __setChatTransportForTests(async ({ messages }) => {
+      callCount += 1;
+      if (callCount === 2) secondTurnMessages = messages;
+      if (callCount === 1) {
+        return {
+          text: '',
+          blocks: [
+            { type: 'tool-call', toolCallId: 'tc-weird', toolName: 'weird', input: giantInput },
+          ] as ChatBlock[],
+          stopReason: 'tool_calls',
+          usage: { input_tokens: 3, output_tokens: 3, cache_read_tokens: 0, cache_creation_tokens: 0 },
+          model: 'deepseek:deepseek-v4-flash',
+          providerId: 'deepseek',
+        };
+      }
+      return {
+        text: 'ok after weird input',
+        blocks: [{ type: 'text', text: 'ok after weird input' }] as ChatBlock[],
+        stopReason: 'end',
+        usage: { input_tokens: 4, output_tokens: 4, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'deepseek:deepseek-v4-flash',
+        providerId: 'deepseek',
+      };
+    });
+
+    const result = await toolLoop({
+      initialMessages: [{ role: 'user', content: 'call malformed tool input' }],
+      tools: [{ name: 'weird', description: 'weird', inputSchema: { type: 'object' } }],
+      toolHandlers: new Map([['weird', {
+        idempotent: true,
+        async execute(input) {
+          return { inputType: typeof input, inputLength: String(input).length };
+        },
+      }]]),
+      model: 'deepseek:deepseek-v4-flash',
+    });
+
+    expect(result.finalText).toBe('ok after weird input');
+    expect(secondTurnMessages).not.toBeNull();
+    const toolMsg = secondTurnMessages!.find(m => m.role === 'tool')!;
+    const block = (toolMsg.content as ChatBlock[])[0] as Extract<ChatBlock, { type: 'tool-result' }>;
+    expect(block.output).toEqual({ inputType: 'string', inputLength: 64000 });
+  });
+
   it('disables DeepSeek V4 thinking mode for provider-neutral tool-loop compatibility', () => {
     expect(__providerSpecificChatOptionsForTests('deepseek', 'deepseek-v4-flash')).toEqual({
       thinking: { type: 'disabled' },
@@ -404,6 +493,8 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
       thinking: { type: 'disabled' },
     });
     expect(__providerSpecificChatOptionsForTests('deepseek', 'deepseek-chat')).toEqual({});
+    expect(__providerSpecificChatOptionsForTests('google', 'gemini-2.5-flash')).toEqual({});
+    expect(__providerSpecificChatOptionsForTests('google', 'gemini-2.5-pro')).toEqual({});
     expect(__providerSpecificChatOptionsForTests('anthropic', 'claude-sonnet-4-6')).toEqual({});
   });
 });

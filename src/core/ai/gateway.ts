@@ -2476,15 +2476,21 @@ export function probeChatModel(modelStr: string): ChatModelProbe {
   return { ok: true };
 }
 
-function toJsonSafeValue(value: unknown): unknown {
+function toJsonSafeValue(value: unknown, seen = new WeakSet<object>()): unknown {
   if (value === undefined) return null;
   if (value === null) return null;
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
-  if (Array.isArray(value)) return value.map(toJsonSafeValue);
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'symbol' || typeof value === 'function') return String(value);
   if (typeof value === 'object') {
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    if (Array.isArray(value)) {
+      return value.map(v => toJsonSafeValue(v, seen));
+    }
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = toJsonSafeValue(v);
+      out[k] = toJsonSafeValue(v, seen);
     }
     return out;
   }
