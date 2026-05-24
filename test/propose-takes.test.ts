@@ -265,6 +265,21 @@ describe('runPhaseProposeTakes — phase integration', () => {
     expect(inserts[0]!.params[9]).toBe('market'); // domain
   });
 
+  test('dryRun counts candidate proposals without writing rows', async () => {
+    const pages = [buildPage({ slug: 'wiki/dry-run', body: 'This market should compound faster than expected.' })];
+    const { engine, captured } = buildMockEngine({ pages });
+    const extractor: ProposeTakesExtractor = async () => [
+      { claim_text: 'This market should compound faster than expected.', kind: 'take', holder: 'brain', weight: 0.6 },
+    ];
+
+    const result = await runPhaseProposeTakes(buildCtx(engine), { extractor, dryRun: true });
+
+    const details = result.details as Record<string, unknown>;
+    expect(result.status).toBe('ok');
+    expect(details.proposals_inserted).toBe(1);
+    expect(captured.filter(c => c.sql.includes('INSERT INTO take_proposals'))).toHaveLength(0);
+  });
+
   test('cache hit: page already in take_proposals is skipped', async () => {
     const body = 'A page that was already processed.';
     const pages = [buildPage({ slug: 'wiki/old-page', body })];

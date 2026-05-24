@@ -2011,7 +2011,7 @@ export async function runCycle(
           checkAborted(opts.signal);
           progress.start('cycle.propose_takes');
           const { runPhaseProposeTakes } = await import('./cycle/propose-takes.ts');
-          const { result, duration_ms } = await timePhase(() => runPhaseProposeTakes(calibrationCtx, { repoPath: brainDir ?? undefined }) as Promise<PhaseResult>);
+          const { result, duration_ms } = await timePhase(() => runPhaseProposeTakes(calibrationCtx, { repoPath: brainDir ?? undefined, dryRun }) as Promise<PhaseResult>);
           result.duration_ms = duration_ms;
           phaseResults.push(result);
           progress.finish();

@@ -43,6 +43,7 @@ import { chat as gatewayChat } from '../ai/gateway.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { GBrainError } from '../types.ts';
+import { resolveModel } from '../model-config.ts';
 import type { Page, PageFilters } from '../types.ts';
 import type { OperationContext } from '../operations.ts';
 import type { BrainEngine } from '../engine.ts';
@@ -307,6 +308,16 @@ class ProposeTakesPhase extends BaseCyclePhase {
     const promptVersion = opts.promptVersion ?? PROPOSE_TAKES_PROMPT_VERSION;
     const pageLimit = opts.pageLimit ?? 100;
     const skipPagesWithFence = opts.skipPagesWithFence ?? false;
+    const modelId = opts.model ?? (
+      typeof (engine as unknown as { getConfig?: unknown }).getConfig === 'function'
+        ? await resolveModel(engine, {
+            configKey: 'models.propose_takes',
+            deprecatedConfigKey: 'cycle.propose_takes.model',
+            tier: 'utility',
+            fallback: 'google:gemini-2.0-flash',
+          })
+        : 'google:gemini-2.0-flash'
+    );
     const proposalRunId = `propose-${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}-${randomUUID().slice(0, 8)}`;
 
     const result: ProposeTakesResult = {
@@ -359,7 +370,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
 
       // Budget pre-check before the LLM call. Estimate: ~1500 input tokens + 500 output.
       const budget = this.checkBudget({
-        modelId: opts.model ?? 'claude-sonnet-4-6',
+        modelId,
         estimatedInputTokens: 1500,
         maxOutputTokens: 500,
       });
@@ -378,7 +389,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
           pagePath: page.slug,
           pageBody: body,
           existingTakes,
-          modelHint: opts.model,
+          modelHint: modelId,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -389,6 +400,10 @@ class ProposeTakesPhase extends BaseCyclePhase {
       // Write proposals to take_proposals. Each row is a separate INSERT
       // because the composite idempotency key is on the per-page tuple — a
       // bulk UPSERT would collapse a same-page-multi-claim run into one row.
+      if (opts.dryRun) {
+        result.proposals_inserted += proposals.length;
+        continue;
+      }
       for (const p of proposals) {
         await engine.executeRaw(
           `INSERT INTO take_proposals
@@ -408,7 +423,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
             p.weight,
             p.domain ?? null,
             JSON.stringify(existingTakes),
-            opts.model ?? 'claude-sonnet-4-6',
+            modelId,
           ],
         );
         result.proposals_inserted += 1;
