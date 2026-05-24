@@ -83,6 +83,29 @@ function ensureFloat(raw: string | undefined, fallback: number): number {
   return n;
 }
 
+function normalizeProposalKind(raw: string): TakeKind {
+  if (raw === 'fact' || raw === 'take' || raw === 'bet' || raw === 'hunch') return raw;
+  // propose_takes prompt uses gradeable-claim labels; canonical takes fence uses the older enum.
+  if (raw === 'prediction') return 'bet';
+  if (raw === 'judgment' || raw === 'recommendation') return 'take';
+  return 'take';
+}
+
+function parseLimit(args: string[], fallback: number): number {
+  const raw = flagValue(args, '--limit');
+  if (raw === undefined) return fallback;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) {
+    console.error(`Invalid --limit "${raw}". Expected a positive integer.`);
+    process.exit(1);
+  }
+  return n;
+}
+
+function jsonOut(value: unknown): string {
+  return JSON.stringify(value, (_key, v) => typeof v === 'bigint' ? Number(v) : v, 2);
+}
+
 async function getPageId(engine: BrainEngine, slug: string): Promise<number> {
   const rows = await engine.executeRaw<{ id: number }>(
     `SELECT id FROM pages WHERE slug = $1 LIMIT 1`,
@@ -415,6 +438,182 @@ async function cmdResolve(engine: BrainEngine, args: string[]): Promise<void> {
  * exceeds 20% the CLI prints a warning line; calibration on a hedge-heavy
  * scorecard is artificially clean, and the user should know.
  */
+type TakeProposalRow = {
+  id: number;
+  source_id: string;
+  page_slug: string;
+  claim_text: string;
+  kind: string;
+  holder: string;
+  weight: number;
+  domain: string | null;
+  status: string;
+  proposed_at: string;
+  model_id: string;
+  prompt_version: string;
+  acted_at: string | null;
+  acted_by: string | null;
+  promoted_row_num: number | null;
+};
+
+async function fetchProposal(engine: BrainEngine, id: number): Promise<TakeProposalRow> {
+  const rows = await engine.executeRaw<TakeProposalRow>(
+    `SELECT id, source_id, page_slug, claim_text, kind, holder, weight, domain,
+            status, proposed_at, model_id, prompt_version, acted_at, acted_by, promoted_row_num
+       FROM take_proposals
+      WHERE id = $1
+      LIMIT 1`,
+    [id],
+  );
+  if (!rows[0]) {
+    console.error(`Proposal not found: ${id}`);
+    process.exit(1);
+  }
+  return rows[0];
+}
+
+async function cmdProposals(engine: BrainEngine, args: string[]): Promise<void> {
+  const action = args[0] ?? 'list';
+  const rest = args.slice(1);
+  switch (action) {
+    case 'list': return cmdProposalsList(engine, rest);
+    case 'accept': return cmdProposalsAccept(engine, rest);
+    case 'reject': return cmdProposalsReject(engine, rest);
+    default:
+      console.error(`Usage: gbrain takes proposals list|accept|reject ...`);
+      process.exit(1);
+  }
+}
+
+async function cmdProposalsList(engine: BrainEngine, args: string[]): Promise<void> {
+  const json = flagPresent(args, '--json');
+  const status = flagValue(args, '--status') ?? 'pending';
+  const page = flagValue(args, '--page');
+  const source = flagValue(args, '--source') ?? 'default';
+  const limit = parseLimit(args, 50);
+  const where: string[] = ['source_id = $1'];
+  const params: Array<string | number> = [source];
+  if (status !== 'all') { params.push(status); where.push(`status = $${params.length}`); }
+  if (page) { params.push(page); where.push(`page_slug = $${params.length}`); }
+  params.push(limit);
+  const rows = await engine.executeRaw<TakeProposalRow>(
+    `SELECT id, source_id, page_slug, claim_text, kind, holder, weight, domain,
+            status, proposed_at, model_id, prompt_version, acted_at, acted_by, promoted_row_num
+       FROM take_proposals
+      WHERE ${where.join(' AND ')}
+      ORDER BY proposed_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  const counts = await engine.executeRaw<{ status: string; count: number }>(
+    `SELECT status, COUNT(*)::int AS count
+       FROM take_proposals
+      WHERE source_id = $1
+      GROUP BY status
+      ORDER BY status`,
+    [source],
+  );
+  if (json) {
+    console.log(jsonOut({ source_id: source, filters: { status, page, limit }, counts, proposals: rows }));
+    return;
+  }
+  const pending = counts.find(c => c.status === 'pending')?.count ?? 0;
+  console.log(`# Take proposals (${status}${page ? `, page=${page}` : ''})`);
+  console.log(`Pending: ${pending}\n`);
+  if (rows.length === 0) {
+    console.log('No matching proposals.');
+    return;
+  }
+  for (const p of rows) {
+    console.log(`#${p.id} [${p.status} • ${p.kind}→${normalizeProposalKind(p.kind)} • ${p.holder} • w=${Number(p.weight).toFixed(2)}] ${p.page_slug}`);
+    console.log(`  ${p.claim_text}`);
+    console.log(`  accept: gbrain takes proposals accept ${p.id}`);
+    console.log(`  reject: gbrain takes proposals reject ${p.id}\n`);
+  }
+}
+
+async function cmdProposalsAccept(engine: BrainEngine, args: string[]): Promise<void> {
+  const id = parseInt(args[0] ?? '', 10);
+  if (!Number.isFinite(id)) {
+    console.error('Usage: gbrain takes proposals accept <id> [--dry-run] [--by <holder>] [--source-note "..."] [--dir <path>]');
+    process.exit(1);
+  }
+  const dryRun = flagPresent(args, '--dry-run');
+  const actedBy = flagValue(args, '--by') ?? 'garry';
+  const sourceNote = flagValue(args, '--source-note');
+  const p = await fetchProposal(engine, id);
+  if (p.status !== 'pending') {
+    console.error(`Proposal #${id} is ${p.status}, not pending.`);
+    process.exit(1);
+  }
+  const kind = normalizeProposalKind(p.kind);
+  const source = sourceNote ?? `gbrain take_proposal:${p.id} (${p.model_id}, ${p.prompt_version})`;
+  if (dryRun) {
+    console.log(jsonOut({ dry_run: true, proposal_id: p.id, page_slug: p.page_slug, claim: p.claim_text, kind, holder: p.holder, weight: p.weight, source }));
+    return;
+  }
+  const brainDir = await resolveBrainDir(engine, flagValue(args, '--dir') ?? null);
+  await withPageLock(p.page_slug, async () => {
+    const path = pageFilePath(brainDir, p.page_slug);
+    const body = readBodyOrEmpty(path);
+    const { body: nextBody, rowNum } = upsertTakeRow(body, {
+      claim: p.claim_text,
+      kind,
+      holder: p.holder,
+      weight: Number(p.weight),
+      source,
+      active: true,
+    });
+    writeBody(path, nextBody);
+    const pageId = await getPageId(engine, p.page_slug);
+    await engine.addTakesBatch([{
+      page_id: pageId,
+      row_num: rowNum,
+      claim: p.claim_text,
+      kind,
+      holder: p.holder,
+      weight: Number(p.weight),
+      since_date: undefined,
+      source,
+      active: true,
+      superseded_by: null,
+    }]);
+    await engine.executeRaw(
+      `UPDATE take_proposals
+          SET status = 'accepted', acted_at = now(), acted_by = $2, promoted_row_num = $3
+        WHERE id = $1`,
+      [p.id, actedBy, rowNum],
+    );
+    console.log(`Accepted proposal #${p.id} → ${p.page_slug} take #${rowNum}.`);
+  });
+}
+
+async function cmdProposalsReject(engine: BrainEngine, args: string[]): Promise<void> {
+  const id = parseInt(args[0] ?? '', 10);
+  if (!Number.isFinite(id)) {
+    console.error('Usage: gbrain takes proposals reject <id> [--by <holder>] [--json]');
+    process.exit(1);
+  }
+  const actedBy = flagValue(args, '--by') ?? 'garry';
+  const json = flagPresent(args, '--json');
+  const p = await fetchProposal(engine, id);
+  if (p.status !== 'pending') {
+    console.error(`Proposal #${id} is ${p.status}, not pending.`);
+    process.exit(1);
+  }
+  await engine.executeRaw(
+    `UPDATE take_proposals
+        SET status = 'rejected', acted_at = now(), acted_by = $2
+      WHERE id = $1`,
+    [id, actedBy],
+  );
+  if (json) {
+    console.log(jsonOut({ id, status: 'rejected', acted_by: actedBy }));
+  } else {
+    console.log(`Rejected proposal #${id}.`);
+  }
+}
+
 async function cmdScorecard(engine: BrainEngine, args: string[]): Promise<void> {
   const json = flagPresent(args, '--json');
   const holder = args[0] && !args[0].startsWith('--') ? args[0] : flagValue(args, '--holder');
@@ -547,6 +746,12 @@ Subcommands:
                        [--evidence "..."] [--value N --unit usd|pct|count] [--by <slug>]
                                           Record bet resolution (immutable, v0.30.0)
                                           Back-compat: --outcome true|false (deprecated alias)
+  takes proposals list [--status pending|accepted|rejected|all] [--page <slug>] [--limit N] [--json]
+                                          Review queued LLM take proposals
+  takes proposals accept <id> [--dry-run] [--by <holder>] [--source-note "..."]
+                                          Promote a pending proposal into page fence + takes table
+  takes proposals reject <id> [--by <holder>] [--json]
+                                          Mark a pending proposal rejected
   takes scorecard [<holder>] [--domain <prefix>] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
                                           Aggregate calibration scorecard (v0.30.0)
   takes calibration [<holder>] [--bucket-size 0.1] [--json]
@@ -568,6 +773,7 @@ Common flags:
     case 'update':      return cmdUpdate(engine, rest);
     case 'supersede':   return cmdSupersede(engine, rest);
     case 'resolve':     return cmdResolve(engine, rest);
+    case 'proposals':   return cmdProposals(engine, rest);
     case 'scorecard':   return cmdScorecard(engine, rest);
     case 'calibration': return cmdCalibration(engine, rest);
     case 'revisit':     return cmdRevisit(engine, rest);
