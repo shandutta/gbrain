@@ -265,6 +265,24 @@ describe('runPhaseProposeTakes — phase integration', () => {
     expect(inserts[0]!.params[9]).toBe('market'); // domain
   });
 
+  test('same page can queue multiple distinct proposals', async () => {
+    const pages = [buildPage({ slug: 'wiki/multi', body: 'Two independent claims live here.' })];
+    const { engine, captured } = buildMockEngine({ pages });
+    const extractor: ProposeTakesExtractor = async () => [
+      { claim_text: 'First independent claim', kind: 'take', holder: 'brain', weight: 0.6 },
+      { claim_text: 'Second independent claim', kind: 'hunch', holder: 'brain', weight: 0.4 },
+    ];
+
+    const result = await runPhaseProposeTakes(buildCtx(engine), { extractor });
+
+    const details = result.details as Record<string, unknown>;
+    expect(details.proposals_inserted).toBe(2);
+    const inserts = captured.filter(c => c.sql.includes('INSERT INTO take_proposals'));
+    expect(inserts).toHaveLength(2);
+    expect(inserts[0]!.sql).toContain('ON CONFLICT (source_id, page_slug, content_hash, prompt_version, claim_text) DO NOTHING');
+    expect(inserts.map(i => i.params[5])).toEqual(['First independent claim', 'Second independent claim']);
+  });
+
   test('dryRun counts candidate proposals without writing rows', async () => {
     const pages = [buildPage({ slug: 'wiki/dry-run', body: 'This market should compound faster than expected.' })];
     const { engine, captured } = buildMockEngine({ pages });

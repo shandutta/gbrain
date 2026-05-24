@@ -397,9 +397,10 @@ class ProposeTakesPhase extends BaseCyclePhase {
         continue;
       }
 
-      // Write proposals to take_proposals. Each row is a separate INSERT
-      // because the composite idempotency key is on the per-page tuple — a
-      // bulk UPSERT would collapse a same-page-multi-claim run into one row.
+      // Write proposals to take_proposals. Row idempotency includes claim_text
+      // so one page can queue multiple distinct claims while the pre-extractor
+      // page-cache check above still avoids re-calling the model for unchanged
+      // page content.
       if (opts.dryRun) {
         result.proposals_inserted += proposals.length;
         continue;
@@ -410,7 +411,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
              (source_id, page_slug, content_hash, prompt_version, proposal_run_id,
               claim_text, kind, holder, weight, domain, dedup_against_fence_rows, model_id)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-           ON CONFLICT (source_id, page_slug, content_hash, prompt_version) DO NOTHING`,
+           ON CONFLICT (source_id, page_slug, content_hash, prompt_version, claim_text) DO NOTHING`,
           [
             sourceId,
             page.slug,
