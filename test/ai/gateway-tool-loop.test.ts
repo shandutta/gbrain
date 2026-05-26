@@ -412,7 +412,7 @@ describe('gateway.toolLoop (v0.38 D11 — provider-agnostic loop control)', () =
             toolName: 'cycle_tool',
             output: { type: 'json', value: circular },
             input: circular,
-          },
+          } as any,
         ],
       },
     ]);
