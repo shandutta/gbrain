@@ -58,11 +58,12 @@ describe('gbrain schema CLI (Phase C)', () => {
     expect(r.stdout + r.stderr).toMatch(/schema|active|list|show|validate|use/i);
   });
 
-  test('schema list shows gbrain-base bundled', () => {
+  test('schema list shows bundled packs including gbrain-base-v2', () => {
     const r = gbrain(['schema', 'list']);
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('Bundled packs:');
     expect(r.stdout).toContain('gbrain-base');
+    expect(r.stdout).toContain('gbrain-base-v2');
   });
 
   test('schema show gbrain-base prints manifest details', () => {
@@ -85,6 +86,17 @@ describe('gbrain schema CLI (Phase C)', () => {
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('✓');
     expect(r.stdout).toContain('valid manifest');
+  });
+
+  test('schema show/validate can resolve gbrain-base-v2 bundled successor', () => {
+    const show = gbrain(['schema', 'show', 'gbrain-base-v2']);
+    expect(show.code).toBe(0);
+    expect(show.stdout).toContain('gbrain-base-v2 v1.0.0');
+
+    const validate = gbrain(['schema', 'validate', 'gbrain-base-v2']);
+    expect(validate.code).toBe(0);
+    expect(validate.stdout).toContain('✓');
+    expect(validate.stdout).toContain('valid manifest');
   });
 
   test('schema active reports default resolution', () => {
