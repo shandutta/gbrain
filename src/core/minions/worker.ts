@@ -246,6 +246,20 @@ export class MinionWorker extends EventEmitter {
     return this._rssWatchdogTriggered;
   }
 
+  private async reconnectAfterConnectionLoss(err: unknown, site: string): Promise<boolean> {
+    const msg = err instanceof Error ? err.message : String(err);
+    const looksDisconnected =
+      isRetryableConnError(err) ||
+      msg.includes('No database connection') ||
+      msg.includes('connect() has not been called');
+    if (!looksDisconnected) return false;
+    const maybeReconnect = (this.engine as unknown as { reconnect?: () => Promise<void> }).reconnect;
+    if (typeof maybeReconnect !== 'function') return false;
+    console.warn(`[minion worker] ${site}: database connection lost; reconnecting and continuing`);
+    await maybeReconnect.call(this.engine);
+    return true;
+  }
+
   /** Emit 'unhealthy' with a no-listener fallback. The default contract is
    *  fail-stop: pre-EventEmitter-refactor behavior was process.exit(1) inside
    *  the timer; the refactor moved that responsibility to the CLI subscriber.
@@ -508,12 +522,14 @@ export class MinionWorker extends EventEmitter {
           await this.queue.promoteDelayed();
         } catch (e) {
           console.error('Promotion error:', e instanceof Error ? e.message : String(e));
+          try { await this.reconnectAfterConnectionLoss(e, 'promoteDelayed'); }
+          catch (reconnectErr) { console.error('[minion worker] reconnect after promoteDelayed failed:', reconnectErr); }
         }
 
         // Claim jobs up to concurrency limit
         if (this.inFlight.size < this.opts.concurrency) {
           const lockToken = `${this.workerId}:${Date.now()}`;
-          let job: MinionJob | null;
+          let job: Awaited<ReturnType<MinionQueue['claim']>>;
           try {
             job = await this.queue.claim(
               lockToken,
@@ -529,18 +545,11 @@ export class MinionWorker extends EventEmitter {
             // job (invisible active job, no renewal, later stall). So instead:
             // reconnect once and let the NEXT poll tick re-claim against a live
             // pool. Non-retryable errors propagate (real bug → PM restart).
-            if (!isRetryableConnError(e)) throw e;
-            const msg = e instanceof Error ? e.message : String(e);
-            console.error(`[worker] claim hit a connection error; reconnecting, retry on next tick: ${msg}`);
-            const reconnect = (this.engine as { reconnect?: () => Promise<void> }).reconnect;
-            if (reconnect) {
-              try { await reconnect.call(this.engine); }
-              catch (re) {
-                console.error(`[worker] reconnect after claim error failed: ${re instanceof Error ? re.message : String(re)}`);
-              }
+            if (await this.reconnectAfterConnectionLoss(e, 'claim')) {
+              await new Promise(resolve => setTimeout(resolve, Math.min(this.opts.pollInterval, 1000)));
+              continue;
             }
-            await new Promise(resolve => setTimeout(resolve, this.opts.pollInterval));
-            continue;
+            throw e;
           }
 
           if (job) {
