@@ -24,8 +24,13 @@ import type { FenceInputFact } from '../src/core/facts/fence-write.ts';
 
 let engine: PGLiteEngine;
 let brainDir: string;
+let auditDir: string;
+let previousAuditDir: string | undefined;
 
 beforeAll(async () => {
+  previousAuditDir = process.env.GBRAIN_AUDIT_DIR;
+  auditDir = mkdtempSync(join(tmpdir(), 'fence-write-audit-test-'));
+  process.env.GBRAIN_AUDIT_DIR = auditDir;
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
@@ -33,11 +38,19 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await engine.disconnect();
+  if (previousAuditDir === undefined) {
+    delete process.env.GBRAIN_AUDIT_DIR;
+  } else {
+    process.env.GBRAIN_AUDIT_DIR = previousAuditDir;
+  }
+  rmSync(auditDir, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
-  // Fresh tempdir per test so the fence-write FS state is hermetic.
+  // Fresh tempdirs per test so the fence-write FS and audit state are hermetic.
   brainDir = mkdtempSync(join(tmpdir(), 'fence-write-test-'));
+  rmSync(auditDir, { recursive: true, force: true });
+  mkdirSync(auditDir, { recursive: true });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (engine as any).db.query('DELETE FROM facts');
   // Default source pointed at the fresh brainDir.

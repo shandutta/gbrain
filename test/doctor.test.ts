@@ -1057,6 +1057,17 @@ describe('stub_guard_24h check (v0.34.5)', () => {
   });
 });
 
+describe('content_sanity_audit_recent check', () => {
+  test('warn-only content-sanity events stay ok; hard/soft/pattern events warn/fail', async () => {
+    const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
+    expect(source).toContain('warn-only events');
+    expect(source).toContain('summary.by_type.hard_block > 0');
+    expect(source).toContain('summary.by_type.soft_block > 0');
+    expect(source).toContain('summary.top_patterns.length > 0');
+    expect(source).not.toMatch(/events\.length\s*>?=\s*10\s*\?\s*'warn'/);
+  });
+});
+
 describe('v0.40.4 — graph_signals_coverage check', () => {
   const { PGLiteEngine } = require('../src/core/pglite-engine.ts');
   const { checkGraphSignalsCoverage } = require('../src/commands/doctor.ts');
