@@ -5032,14 +5032,19 @@ export async function buildChecks(
       // skipped the connection. When null, there really is no config
       // anywhere.
       let msg: string;
+      let status: Check['status'] = 'warn';
       if (fastMode && dbSource) {
-        msg = `Skipping DB checks (--fast mode, URL present from ${dbSource})`;
+        // --fast intentionally does not open the database. A configured DB URL
+        // proves this is an explicit skip, not degraded connectivity, so keep
+        // the check informational/OK and avoid depressing fast-mode score.
+        status = 'ok';
+        msg = `DB checks intentionally skipped (--fast mode, URL present from ${dbSource})`;
       } else if (!fastMode && dbSource) {
         msg = `Could not connect to configured DB (URL from ${dbSource}); filesystem checks only`;
       } else {
         msg = 'No database configured (filesystem checks only). Set GBRAIN_DATABASE_URL or run `gbrain init`.';
       }
-      checks.push({ name: 'connection', status: 'warn', message: msg });
+      checks.push({ name: 'connection', status, message: msg });
     }
     // Early return: caller renders the partial check list + decides exit code.
     // Pre-v0.39 this site called outputResults + process.exit directly; the

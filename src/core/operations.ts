@@ -2157,6 +2157,14 @@ const get_brain_identity: Operation = {
   params: {},
   handler: async (ctx) => {
     const stats = await ctx.engine.getStats();
+    const url = ctx.config.database_url || '';
+    const storage = ctx.engine.kind === 'pglite'
+      ? 'pglite'
+      : url.includes('supabase.co')
+        ? 'supabase_postgres'
+        : (url.includes('127.0.0.1') || url.includes('localhost'))
+          ? 'local_postgres'
+          : 'postgres';
     // v0.42 self-upgrade: surface a pending update on the thin-client banner
     // (bonus channel; the CLI stderr marker + `gbrain self-upgrade` are the
     // load-bearing surface). Cache-read-only, no network, fail-open.
@@ -2175,6 +2183,7 @@ const get_brain_identity: Operation = {
     return {
       version: VERSION,
       engine: ctx.engine.kind,
+      storage,
       page_count: stats.page_count,
       chunk_count: stats.chunk_count,
       last_sync_iso: null as string | null,

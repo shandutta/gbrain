@@ -602,6 +602,8 @@ async function runThinClientRouted(
 export interface BrainIdentity {
   version: string;
   engine: 'postgres' | 'pglite';
+  /** Human-safe storage topology label from the server; no URLs/secrets. */
+  storage?: 'local_postgres' | 'supabase_postgres' | 'pglite' | 'postgres';
   page_count: number;
   chunk_count: number;
   last_sync_iso: string | null;
@@ -639,7 +641,8 @@ function formatPageCount(n: number): string {
 function formatBanner(mcpUrl: string, id: BrainIdentity): string {
   const host = mcpUrl.replace(/^https?:\/\//, '').split('/')[0];
   const counts = `brain: ${formatPageCount(id.page_count)} pages, ${formatPageCount(id.chunk_count)} chunks`;
-  return `[thin-client → ${host} · ${counts} · v${id.version}]`;
+  const storage = id.storage ? ` · ${id.storage}` : ` · ${id.engine}`;
+  return `[thin-client → ${host}${storage} · ${counts} · v${id.version}]`;
 }
 
 async function fetchIdentity(
