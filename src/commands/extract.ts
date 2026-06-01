@@ -1772,9 +1772,22 @@ async function extractMentionsFromDb(
     .digest('hex')
     .slice(0, 8);
 
+  const mentionPolicyRows = await engine.executeRaw<{ id: string; policy: string }>(
+    `SELECT id, COALESCE(config->>'mention_linker_policy', CASE WHEN id = 'default' THEN 'auto' ELSE 'off' END) AS policy FROM sources`,
+  );
+  const mentionPolicyBySource = new Map(mentionPolicyRows.map(r => [r.id, r.policy]));
+  const allPageRefs = await engine.listAllPageRefs();
   const allRefs = sourceIdFilter
-    ? (await engine.listAllPageRefs()).filter(r => r.source_id === sourceIdFilter)
-    : await engine.listAllPageRefs();
+    ? allPageRefs.filter(r => {
+        const policy = mentionPolicyBySource.get(r.source_id) ?? 'off';
+        return r.source_id === sourceIdFilter && (policy === 'auto' || (policy === 'review' && dryRun));
+      })
+    : allPageRefs.filter(r => mentionPolicyBySource.get(r.source_id) === 'auto');
+
+  if (allRefs.length === 0 && !jsonMode) {
+    const scope = sourceIdFilter ? `source ${sourceIdFilter}` : 'auto-policy sources';
+    console.log(`No pages eligible for mention linking in ${scope}; policy is auto=apply, review=dry-run only, off=skip.`);
+  }
 
   // v0.41.19.0 (T5): load checkpoint and skip already-completed
   // (source_id, slug) pairs. Dry-run does NOT load OR persist the

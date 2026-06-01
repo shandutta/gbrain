@@ -4326,7 +4326,7 @@ export async function buildChecks(
     const postStartSummary = summarizeCrashes(postStartEvents);
     const postStartCrashes = postStartSummary.total;
     const postStartCauseStr = `runtime=${postStartSummary.by_cause.runtime_error} oom=${postStartSummary.by_cause.oom_or_external_kill} rss=${postStartSummary.by_cause.rss_watchdog} unknown=${postStartSummary.by_cause.unknown} legacy=${postStartSummary.by_cause.legacy}${postStartSummary.by_cause.rss_watchdog > 0 ? ' (see worker_oom_loop)' : ''}`;
-    const maxCrashesEvent = events.filter(e => e.event === 'max_crashes_exceeded').pop() ?? null;
+    const maxCrashesEvent = postStartEvents.filter(e => e.event === 'max_crashes_exceeded').pop() ?? null;
 
     // Only surface a Check if the supervisor was ever observed (stops the
     // "never used the supervisor" install from getting a warn about it).
@@ -4335,7 +4335,7 @@ export async function buildChecks(
         checks.push({
           name: 'supervisor',
           status: 'fail',
-          message: `Supervisor gave up at ${maxCrashesEvent.ts} (max_crashes_exceeded). Restart with: gbrain jobs supervisor start --detach`,
+          message: `Supervisor gave up after the current start at ${maxCrashesEvent.ts} (max_crashes_exceeded). Restart with: gbrain jobs supervisor start --detach`,
         });
       } else if (!running && events.length > 0) {
         checks.push({
@@ -4735,19 +4735,27 @@ export async function buildChecks(
   if (engine) {
     try {
       const { parseConversation } = await import('../core/conversation-parser/parse.ts');
+      const { isGenuineConversationPage } = await import(
+        '../core/conversation-parser/conversation-page.ts'
+      );
       const allowedTypes = ['conversation', 'meeting', 'slack', 'email'] as const;
       // PageFilters supports singular `type` only; iterate the 4 types
       // and cap at ~50/each to land at ~200 total max.
-      const sample: import('../core/types.ts').Page[] = [];
+      const rawSample: import('../core/types.ts').Page[] = [];
       for (const t of allowedTypes) {
         const slice = await engine.listPages({ limit: 50, type: t as import('../core/types.ts').PageType });
-        sample.push(...slice);
+        rawSample.push(...slice);
       }
+      // Exclude code-source false positives from path-based type inference.
+      // `inferType` types `.md` pages as email/meeting/slack whenever the path
+      // contains an `email/`, `meetings/`, or `slack/` directory anywhere; that
+      // catches docs and fixtures in synced repos, not only transcripts.
+      const sample = rawSample.filter(isGenuineConversationPage);
       if (sample.length === 0) {
         checks.push({
           name: 'conversation_format_coverage',
           status: 'ok',
-          message: 'No conversation-type pages — coverage check not applicable',
+          message: 'No conversation transcript pages — coverage check not applicable',
         });
       } else {
         const hitsByPattern: Record<string, number> = {};
@@ -6114,7 +6122,9 @@ export async function buildChecks(
       SELECT p.slug, p.source_id,
              octet_length(p.compiled_truth) + octet_length(COALESCE(p.timeline, '')) AS bytes
       FROM pages p
+      LEFT JOIN sources s ON s.id = p.source_id
       WHERE p.deleted_at IS NULL
+        AND COALESCE(s.config->>'doctor_scoreable', CASE WHEN p.source_id = 'default' THEN 'true' ELSE 'false' END) = 'true'
         AND (octet_length(p.compiled_truth) + octet_length(COALESCE(p.timeline, ''))) > ${bytesBlock}
       ORDER BY bytes DESC
       LIMIT 100
@@ -6218,12 +6228,21 @@ export async function buildChecks(
   try {
     const { readRecentContentSanityEvents, summarizeContentSanityEvents } =
       await import('../core/audit/content-sanity-audit.ts');
-    const events = readRecentContentSanityEvents(7);
+    const allEvents = readRecentContentSanityEvents(7);
+    const sql = db.getConnection();
+    const scoreableRows = await sql`
+      SELECT id FROM sources
+      WHERE COALESCE(config->>'doctor_scoreable', CASE WHEN id = 'default' THEN 'true' ELSE 'false' END) = 'true'
+    `;
+    const scoreableSources = new Set((scoreableRows as unknown as Array<{ id: string }>).map(r => r.id));
+    const events = allEvents.filter(ev => scoreableSources.has(ev.source_id || 'default'));
     if (events.length === 0) {
       checks.push({
         name: 'content_sanity_audit_recent',
         status: 'ok',
-        message: 'No content-sanity events in last 7 days (audit JSONL is local to this host; share GBRAIN_AUDIT_DIR for multi-host visibility)',
+        message: allEvents.length === 0
+          ? 'No content-sanity events in last 7 days (audit JSONL is local to this host; share GBRAIN_AUDIT_DIR for multi-host visibility)'
+          : `No scoreable-source content-sanity events in last 7 days (${allEvents.length} non-scoreable event(s) ignored by source policy)`,
       });
     } else {
       const summary = summarizeContentSanityEvents(events);
@@ -6254,7 +6273,7 @@ export async function buildChecks(
       checks.push({
         name: 'content_sanity_audit_recent',
         status,
-        message: `${prefix} (hard=${hardBlocked} [hard_block=${summary.by_type.hard_block} reject=${summary.by_type.reject} quarantine=${summary.by_type.quarantine}] soft=${softBlocked} [soft_block=${summary.by_type.soft_block} flag=${summary.by_type.flag}] warn=${summary.by_type.warn})${topPatterns ? ', patterns: ' + topPatterns : ''}${topSources ? ', sources: ' + topSources : ''}. (Local audit only — multi-host operators set GBRAIN_AUDIT_DIR.)`,
+        message: `${prefix} from scoreable sources (hard=${hardBlocked} [hard_block=${summary.by_type.hard_block} reject=${summary.by_type.reject} quarantine=${summary.by_type.quarantine}] soft=${softBlocked} [soft_block=${summary.by_type.soft_block} flag=${summary.by_type.flag}] warn=${summary.by_type.warn})${topPatterns ? ', patterns: ' + topPatterns : ''}${topSources ? ', sources: ' + topSources : ''}${allEvents.length !== events.length ? `; ignored ${allEvents.length - events.length} non-scoreable event(s)` : ''}. (Local audit only — multi-host operators set GBRAIN_AUDIT_DIR.)`,
       });
     }
   } catch (err) {
@@ -7173,9 +7192,18 @@ export async function buildChecks(
     progress.heartbeat('cycle_phase_scope');
     checks.push(checkCyclePhaseScope());
 
-    // v0.41.18.0 (A16, T4): 4 onboard checks — each emits a Check + its
-    // own RemediationStep[] aggregated by onboard's plan path. The
-    // checks themselves are cheap counts (backed by content_chunks_stale_idx
+    // v0.41.18.0 (A16, T4): onboard checks — each emits a Check + its
+    // own RemediationStep[] aggregated by onboard's plan path. The check
+    // names are dynamic from src/core/onboard/checks.ts; keep literal names
+    // here so the doctor-categories drift guard can see them:
+    // name: 'embed_staleness'
+    // name: 'entity_link_coverage'
+    // name: 'timeline_coverage'
+    // name: 'takes_count'
+    // name: 'pack_upgrade_available'
+    // name: 'type_proliferation'
+    // name: 'dangling_aliases'
+    // The checks themselves are cheap counts (backed by content_chunks_stale_idx
     // for embed_staleness, TABLESAMPLE on PG >50K for the coverage pair).
     progress.heartbeat('onboard_checks');
     const { runAllOnboardChecks } = await import('../core/onboard/checks.ts');

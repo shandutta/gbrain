@@ -1264,12 +1264,12 @@ describe('PGLiteEngine: getHealth graph metrics', () => {
     expect(h.link_coverage).toBe(0);
   });
 
-  test('link_coverage = % of entity pages with >= 1 inbound link', async () => {
-    // Acme gets 1 inbound link (from Alice), Alice/Bob get 0 inbound.
-    // 1 of 3 entity pages has inbound links -> 33%.
+  test('link_coverage = % of entity pages with any graph link', async () => {
+    // Acme gets inbound link, Alice gets outbound link, Bob remains isolated.
+    // 2 of 3 entity pages participate in graph links -> 66%.
     await engine.addLink('people/alice', 'companies/acme', '', 'works_at');
     const h = await engine.getHealth();
-    expect(h.link_coverage).toBeCloseTo(1 / 3, 2);
+    expect(h.link_coverage).toBeCloseTo(2 / 3, 2);
   });
 
   test('timeline_coverage = % with >= 1 timeline entry', async () => {

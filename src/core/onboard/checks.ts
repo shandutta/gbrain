@@ -115,12 +115,17 @@ export async function checkEmbedStaleness(
 export async function checkEntityLinkCoverage(
   engine: BrainEngine,
 ): Promise<OnboardCheckResult> {
-  // Total entity pages
+  const scoreableSourcePredicate = `COALESCE(s.config->>'doctor_scoreable', CASE WHEN p.source_id = 'default' THEN 'true' ELSE 'false' END) = 'true'`;
+  // Total scoreable entity pages. Imported code/artifact sources can carry
+  // entities for retrieval without pressuring the operator to manufacture
+  // weak graph edges just to make onboard green.
   const totalEntities = await safeCount(
     engine,
-    `SELECT COUNT(*) AS count FROM pages
-       WHERE type IN ('person', 'company', 'organization', 'entity')
-         AND deleted_at IS NULL`,
+    `SELECT COUNT(*) AS count FROM pages p
+       LEFT JOIN sources s ON s.id = p.source_id
+       WHERE p.type IN ('person', 'company', 'organization', 'entity')
+         AND p.deleted_at IS NULL
+         AND ${scoreableSourcePredicate}`,
   );
 
   if (totalEntities === 0) {
@@ -142,9 +147,11 @@ export async function checkEntityLinkCoverage(
     engine,
     `SELECT COUNT(*) AS count FROM (
        SELECT p.id FROM pages p ${sampleClause}
+       LEFT JOIN sources s ON s.id = p.source_id
        WHERE p.type IN ('person', 'company', 'organization', 'entity')
          AND p.deleted_at IS NULL
-         AND EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
+         AND ${scoreableSourcePredicate}
+         AND EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id OR l.from_page_id = p.id)
      ) sub`,
   );
   const sampleSize = useSample
@@ -211,11 +218,14 @@ export async function checkEntityLinkCoverage(
 export async function checkTimelineCoverage(
   engine: BrainEngine,
 ): Promise<OnboardCheckResult> {
+  const scoreableSourcePredicate = `COALESCE(s.config->>'doctor_scoreable', CASE WHEN p.source_id = 'default' THEN 'true' ELSE 'false' END) = 'true'`;
   const totalEntities = await safeCount(
     engine,
-    `SELECT COUNT(*) AS count FROM pages
-       WHERE type IN ('person', 'company', 'organization', 'entity')
-         AND deleted_at IS NULL`,
+    `SELECT COUNT(*) AS count FROM pages p
+       LEFT JOIN sources s ON s.id = p.source_id
+       WHERE p.type IN ('person', 'company', 'organization', 'entity')
+         AND p.deleted_at IS NULL
+         AND ${scoreableSourcePredicate}`,
   );
 
   if (totalEntities === 0) {
@@ -235,8 +245,10 @@ export async function checkTimelineCoverage(
     engine,
     `SELECT COUNT(*) AS count FROM (
        SELECT p.id FROM pages p ${sampleClause}
+       LEFT JOIN sources s ON s.id = p.source_id
        WHERE p.type IN ('person', 'company', 'organization', 'entity')
          AND p.deleted_at IS NULL
+         AND ${scoreableSourcePredicate}
          AND EXISTS (SELECT 1 FROM timeline_entries t WHERE t.page_id = p.id)
      ) sub`,
   );
@@ -475,7 +487,12 @@ export async function checkTypeProliferation(
   }
   const n = await safeCount(
     engine,
-    `SELECT COUNT(DISTINCT type) AS count FROM pages WHERE deleted_at IS NULL AND type IS NOT NULL`,
+    `SELECT COUNT(DISTINCT p.type) AS count
+     FROM pages p
+     LEFT JOIN sources s ON s.id = p.source_id
+     WHERE p.deleted_at IS NULL
+       AND p.type IS NOT NULL
+       AND COALESCE(s.config->>'doctor_scoreable', CASE WHEN p.source_id = 'default' THEN 'true' ELSE 'false' END) = 'true'`,
   );
   const warn = declared + 5;
   const fail = declared * 2;

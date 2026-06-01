@@ -96,8 +96,8 @@ describe('Bug 11 — orphan_pages is "no inbound links"', () => {
     expect(h.orphan_pages).toBe(0);
   });
 
-  test('a page with no links at all IS an orphan', async () => {
-    await engine.putPage('loner', { type: 'note', title: 'Loner', compiled_truth: 'alone', frontmatter: {} });
+  test('a scoreable page with no links at all IS an orphan', async () => {
+    await engine.putPage('people/loner', { type: 'person', title: 'Loner', compiled_truth: 'alone', frontmatter: {} });
     const h = await engine.getHealth();
     expect(h.orphan_pages).toBe(1);
   });

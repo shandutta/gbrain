@@ -886,10 +886,14 @@ export function formatResult(opName: string, result: unknown): string {
       // Health score weights: missing_embeddings is the heaviest (2 pts), other
       // graph quality issues are 1 pt each. link_coverage / timeline_coverage below
       // 50% on entity pages indicates the graph needs population.
-      const score = Math.max(0, 10
+      // Human 10-point health follows the composite brain_score when the
+      // data-plane is otherwise clean. Stale/orphan counts remain visible
+      // below, but once the source-aware graph score is excellent they should
+      // not make the dashboard look unhealthy just because imported/archive
+      // corpus shape differs from personal-memory shape.
+      const composite = h.brain_score ?? 100;
+      const score = Math.max(0, Math.min(10, Math.round(composite / 10))
         - (h.missing_embeddings > 0 ? 2 : 0)
-        - (h.stale_pages > 0 ? 1 : 0)
-        - (h.orphan_pages > 0 ? 1 : 0)
         - ((h.link_coverage ?? 1) < 0.5 ? 1 : 0)
         - ((h.timeline_coverage ?? 1) < 0.5 ? 1 : 0));
       const lines = [

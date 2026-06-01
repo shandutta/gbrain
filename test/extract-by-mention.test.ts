@@ -286,4 +286,39 @@ describe('gbrain extract links --by-mention — integration', () => {
     // Cross-source guard fires → 0 mention links from team-b/post to default/acme.
     expect(Number(rows[0]!.c)).toBe(0);
   });
+
+  test('15. mention_linker_policy review is dry-run only; off is skipped', async () => {
+    await engine.executeRaw(`
+      INSERT INTO sources (id, name, config)
+      VALUES
+        ('review-src', 'Review Source', '{"mention_linker_policy":"review"}'::jsonb),
+        ('off-src', 'Off Source', '{"mention_linker_policy":"off"}'::jsonb)
+      ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config
+    `, []);
+    await engine.putPage('people/charlie', {
+      type: 'person', title: 'Charlie Reviewer', compiled_truth: 'charlie body', timeline: '', frontmatter: {},
+    }, { sourceId: 'review-src' });
+    await engine.putPage('writing/review-post', {
+      type: 'note', title: 'Review Post', compiled_truth: 'Charlie Reviewer joined the archive review.', timeline: '', frontmatter: {},
+    }, { sourceId: 'review-src' });
+    await engine.putPage('people/dana', {
+      type: 'person', title: 'Dana Off', compiled_truth: 'dana body', timeline: '', frontmatter: {},
+    }, { sourceId: 'off-src' });
+    await engine.putPage('writing/off-post', {
+      type: 'note', title: 'Off Post', compiled_truth: 'Dana Off should not be linked.', timeline: '', frontmatter: {},
+    }, { sourceId: 'off-src' });
+
+    await runCli(['links', '--by-mention', '--source', 'db', '--source-id', 'review-src', '--dry-run', '--json']);
+    expect(stdoutBuffer.some(l => l.includes('"action":"add_link"') && l.includes('people/charlie'))).toBe(true);
+    let rows = await engine.executeRaw<{ c: string }>(`SELECT COUNT(*)::text AS c FROM links WHERE link_source = 'mentions'`, []);
+    expect(Number(rows[0]!.c)).toBe(0);
+
+    await runCli(['links', '--by-mention', '--source', 'db', '--source-id', 'review-src']);
+    rows = await engine.executeRaw<{ c: string }>(`SELECT COUNT(*)::text AS c FROM links WHERE link_source = 'mentions'`, []);
+    expect(Number(rows[0]!.c)).toBe(0);
+    expect(stdoutBuffer.join('\n')).toContain('review=dry-run only');
+
+    await runCli(['links', '--by-mention', '--source', 'db', '--source-id', 'off-src', '--dry-run', '--json']);
+    expect(stdoutBuffer.some(l => l.includes('"action":"add_link"'))).toBe(false);
+  });
 });

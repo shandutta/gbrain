@@ -4655,19 +4655,32 @@ export class PGLiteEngine implements BrainEngine {
     // most_connected). Both coexist: master's brain_score is the composite
     // dashboard, v0.10.3 metrics give entity-page-level granularity.
     const { rows: [h] } = await this.db.query(`
-      WITH entity_pages AS (
-        SELECT id, slug FROM pages WHERE type IN ('person', 'company')
+      WITH scoreable_pages AS (
+        -- Global health should reflect the curated knowledge graph, not every
+        -- isolated imported/source/code/transcript artifact. Embeddings remain
+        -- whole-brain below; graph/timeline scoring is scoped to default-source
+        -- durable knowledge pages.
+        SELECT id, slug FROM pages
+        WHERE source_id = 'default'
+          AND type IN ('person', 'company', 'project')
+      ),
+      entity_pages AS (
+        SELECT id, slug FROM pages
+        WHERE source_id = 'default'
+          AND type IN ('person', 'company')
       )
       SELECT
         (SELECT count(*) FROM pages) as page_count,
+        (SELECT count(*) FROM scoreable_pages) as scoreable_page_count,
         (SELECT count(*) FROM content_chunks WHERE embedded_at IS NOT NULL)::float /
           GREATEST((SELECT count(*) FROM content_chunks), 1)::float as embed_coverage,
         (SELECT count(*) FROM pages p
-         WHERE p.updated_at < (SELECT MAX(te.created_at) FROM timeline_entries te WHERE te.page_id = p.id)
+         WHERE p.source_id = 'default'
+           AND p.updated_at < (SELECT MAX(te.created_at) FROM timeline_entries te WHERE te.page_id = p.id)
         ) as stale_pages,
         -- Bug 11 — orphan = islanded (no inbound AND no outbound).
         -- See BrainHealth.orphan_pages docstring; docs updated to match this.
-        (SELECT count(*) FROM pages p
+        (SELECT count(*) FROM scoreable_pages p
          WHERE NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
            AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = p.id)
         ) as orphan_pages,
@@ -4675,10 +4688,14 @@ export class PGLiteEngine implements BrainEngine {
          WHERE NOT EXISTS (SELECT 1 FROM pages p WHERE p.id = l.to_page_id)
         ) as dead_links,
         (SELECT count(*) FROM content_chunks WHERE embedded_at IS NULL) as missing_embeddings,
-        (SELECT count(*) FROM links) as link_count,
-        (SELECT count(DISTINCT page_id) FROM timeline_entries) as pages_with_timeline,
+        (SELECT count(*) FROM links l
+         WHERE EXISTS (SELECT 1 FROM scoreable_pages p WHERE p.id = l.from_page_id OR p.id = l.to_page_id)
+        ) as link_count,
+        (SELECT count(DISTINCT te.page_id) FROM timeline_entries te
+         WHERE EXISTS (SELECT 1 FROM entity_pages e WHERE e.id = te.page_id)
+        ) as pages_with_timeline,
         (SELECT count(*) FROM entity_pages e
-         WHERE EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id))::float /
+         WHERE EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id OR l.from_page_id = e.id))::float /
           GREATEST((SELECT count(*) FROM entity_pages), 1)::float as link_coverage,
         (SELECT count(*) FROM entity_pages e
          WHERE EXISTS (SELECT 1 FROM timeline_entries te WHERE te.page_id = e.id))::float /
@@ -4697,15 +4714,16 @@ export class PGLiteEngine implements BrainEngine {
 
     const r = h as Record<string, unknown>;
     const pageCount = Number(r.page_count);
+    const scoreablePageCount = Number(r.scoreable_page_count);
     const embedCoverage = Number(r.embed_coverage);
     const orphanPages = Number(r.orphan_pages);
     const deadLinks = Number(r.dead_links);
     const linkCount = Number(r.link_count);
-    const pagesWithTimeline = Number(r.pages_with_timeline);
 
-    const linkDensity = pageCount > 0 ? Math.min(linkCount / pageCount, 1) : 0;
-    const timelineCoverageDensity = pageCount > 0 ? Math.min(pagesWithTimeline / pageCount, 1) : 0;
-    const noOrphans = pageCount > 0 ? 1 - (orphanPages / pageCount) : 1;
+    // See PostgresEngine.getHealth for the scoring rationale.
+    const linkDensity = scoreablePageCount > 0 ? Math.min(linkCount / scoreablePageCount, 1) : 0;
+    const timelineCoverageDensity = Number(r.timeline_coverage);
+    const noOrphans = scoreablePageCount > 0 ? 1 - (orphanPages / scoreablePageCount) : 1;
     const noDeadLinks = pageCount > 0 ? 1 - Math.min(deadLinks / pageCount, 1) : 1;
     // Bug 11 — per-component points. Sum equals brainScore by construction
     // so `doctor` can render a breakdown that adds up to the total.
