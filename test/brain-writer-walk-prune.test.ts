@@ -47,6 +47,11 @@ beforeAll(() => {
   // Nested node_modules — must also be pruned, not just at the root.
   mkdirSync(join(root, 'people', 'tools', 'node_modules', 'inner'), { recursive: true });
   writeFileSync(join(root, 'people', 'tools', 'node_modules', 'inner', 'a.md'), '---\ntitle: nope\n---\n');
+  // Python virtualenv — venv lacks a leading dot so it must be in PRUNE_DIR_NAMES explicitly.
+  // The reporter bug that motivated this: gbrain doctor flagged HuggingFace template
+  // markdown under ~/.hermes/hermes-agent/venv/lib/…/huggingface_hub/templates/.
+  mkdirSync(join(root, 'venv', 'lib', 'python3.11', 'site-packages', 'huggingface_hub', 'templates'), { recursive: true });
+  writeFileSync(join(root, 'venv', 'lib', 'python3.11', 'site-packages', 'huggingface_hub', 'templates', 'modelcard_template.md'), '---\ntitle: vendored\n---\n');
   // Git-submodule pattern: a dir containing `.git` as a FILE (gitfile).
   mkdirSync(join(root, 'people', 'submod'), { recursive: true });
   writeFileSync(join(root, 'people', 'submod', '.git'), 'gitdir: ../../.git/modules/submod\n');
@@ -100,13 +105,19 @@ describe('walkDir (brain-writer.ts) — descent-time pruning', () => {
     expect(files.some(f => f.includes('/node_modules/'))).toBe(false);
   });
 
+  test('does NOT descend into venv (Python virtualenv — no leading dot)', () => {
+    const visited: string[] = [];
+    walkDir(root, () => {}, (dir) => visited.push(dir));
+    expect(visited.some(d => d.includes('/venv'))).toBe(false);
+  });
+
   test('regression: pre-v0.38.2.0 walker would have descended into node_modules and stat\'d every entry', () => {
     // This is the load-bearing assertion. If a future contributor removes
     // the `pruneDir(name, dir)` gate in walkDir, this test fails because
     // visitDir would be called with node_modules paths.
     const descents: string[] = [];
     walkDir(root, () => {}, (d) => descents.push(d));
-    const vendor = descents.filter(d => /\/(node_modules|\.git|\.obsidian|ops)(\/|$)/.test(d) || /\.raw$/.test(d));
+    const vendor = descents.filter(d => /\/(node_modules|\.git|\.obsidian|ops|venv)(\/|$)/.test(d) || /\.raw$/.test(d));
     expect(vendor).toEqual([]);
   });
 });
@@ -125,6 +136,12 @@ describe('collectFiles (frontmatter.ts) — descent-time pruning parity', () => 
     expect(visited.some(d => d.includes('/.obsidian'))).toBe(false);
     expect(visited.some(d => d.endsWith('.raw'))).toBe(false);
     expect(visited.some(d => d.endsWith('/ops') || d.includes('/ops/'))).toBe(false);
+  });
+
+  test('does NOT descend into venv (Python virtualenv — catches the HuggingFace template false-positive)', () => {
+    const visited: string[] = [];
+    collectFiles(root, (dir) => visited.push(dir));
+    expect(visited.some(d => d.includes('/venv'))).toBe(false);
   });
 
   test('does NOT descend into git submodule directories', () => {

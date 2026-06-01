@@ -256,6 +256,9 @@ const PRUNE_DIR_NAMES = new Set<string>([
   'venv',
   '.raw',
   'ops',
+  // Python virtualenv directories. `.venv` is already caught by the
+  // dot-prefix heuristic; `venv` lacks a leading dot so must be explicit.
+  'venv',
 ]);
 
 /**

@@ -132,6 +132,10 @@ describe('pruneDir', () => {
     expect(pruneDir('ops')).toBe(false);
   });
 
+  test('blocks venv (Python virtualenv — explicit, lacks leading dot)', () => {
+    expect(pruneDir('venv')).toBe(false);
+  });
+
   test('blocks *.raw sidecar dirs (gbrain convention)', () => {
     expect(pruneDir('.raw')).toBe(false);
     expect(pruneDir('pedro.raw')).toBe(false);
