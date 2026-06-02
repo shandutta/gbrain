@@ -183,7 +183,7 @@ export async function tryAcquireDbLock(
     // `gbrain sync --break-lock --max-age <s>` uses last_refreshed_at (not
     // acquired_at) to identify wedged-but-alive holders without stealing
     // healthy long-running holders that are actively refreshing.
-    const rows: Array<{ id: string }> = await sql`
+    const rows: Array<{ id: string; acquired_at: Date | string }> = await sql`
       INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at)
       VALUES (${lockId}, ${pid}, ${host}, NOW(), NOW() + ${ttl}::interval, NOW())
       ON CONFLICT (id) DO UPDATE
@@ -195,35 +195,37 @@ export async function tryAcquireDbLock(
         WHERE gbrain_cycle_locks.ttl_expires_at < NOW()
           AND (gbrain_cycle_locks.last_refreshed_at IS NULL
                OR gbrain_cycle_locks.last_refreshed_at < NOW() - ${stealGraceSeconds} * INTERVAL '1 second')
-      RETURNING id
+      RETURNING id, acquired_at
     `;
     if (rows.length === 0) return null;
+    const acquiredAt = rows[0].acquired_at;
     const deregister = registerCleanup(`db-lock:${lockId}`, async () => {
       await sql`
         DELETE FROM gbrain_cycle_locks
-        WHERE id = ${lockId} AND holder_pid = ${pid}
+        WHERE id = ${lockId} AND holder_pid = ${pid} AND acquired_at = ${acquiredAt}
       `;
     });
     return {
       id: lockId,
       refresh: async () => {
-        // v0.41.13.0: bump BOTH ttl_expires_at AND last_refreshed_at.
         // v0.42.x (#1794): route through the DIRECT session pool, not the
         // transaction pool, so a Supavisor pooler exhaustion (EMAXCONNSESSION)
         // can't kill the heartbeat and let the live lock get stolen.
+        // Keep acquired_at in the predicate so stale same-PID handles cannot
+        // refresh/release a newer lock acquisition.
         await engine.executeRawDirect(
           `UPDATE gbrain_cycle_locks
               SET ttl_expires_at = NOW() + ($1)::interval,
                   last_refreshed_at = NOW()
-            WHERE id = $2 AND holder_pid = $3`,
-          [ttl, lockId, pid],
+            WHERE id = $2 AND holder_pid = $3 AND acquired_at = $4`,
+          [ttl, lockId, pid, acquiredAt],
         );
       },
       release: async () => {
         deregister();
         await sql`
           DELETE FROM gbrain_cycle_locks
-          WHERE id = ${lockId} AND holder_pid = ${pid}
+          WHERE id = ${lockId} AND holder_pid = ${pid} AND acquired_at = ${acquiredAt}
         `;
       },
     };
@@ -244,14 +246,15 @@ export async function tryAcquireDbLock(
          WHERE gbrain_cycle_locks.ttl_expires_at < NOW()
            AND (gbrain_cycle_locks.last_refreshed_at IS NULL
                 OR gbrain_cycle_locks.last_refreshed_at < NOW() - $5 * INTERVAL '1 second')
-       RETURNING id`,
+       RETURNING id, acquired_at`,
       [lockId, pid, host, ttl, stealGraceSeconds],
     );
     if (rows.length === 0) return null;
+    const acquiredAt = (rows[0] as { acquired_at: Date | string }).acquired_at;
     const deregister = registerCleanup(`db-lock:${lockId}`, async () => {
       await db.query(
-        `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2`,
-        [lockId, pid],
+        `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND acquired_at = $3`,
+        [lockId, pid, acquiredAt],
       );
     });
     return {
@@ -261,15 +264,15 @@ export async function tryAcquireDbLock(
           `UPDATE gbrain_cycle_locks
               SET ttl_expires_at = NOW() + $1::interval,
                   last_refreshed_at = NOW()
-            WHERE id = $2 AND holder_pid = $3`,
-          [ttl, lockId, pid],
+            WHERE id = $2 AND holder_pid = $3 AND acquired_at = $4`,
+          [ttl, lockId, pid, acquiredAt],
         );
       },
       release: async () => {
         deregister();
         await db.query(
-          `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2`,
-          [lockId, pid],
+          `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND acquired_at = $3`,
+          [lockId, pid, acquiredAt],
         );
       },
     };
