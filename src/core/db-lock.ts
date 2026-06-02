@@ -222,11 +222,15 @@ export async function tryAcquireDbLock(
         );
       },
       release: async () => {
-        deregister();
         await sql`
           DELETE FROM gbrain_cycle_locks
           WHERE id = ${lockId} AND holder_pid = ${pid} AND acquired_at = ${acquiredAt}
         `;
+        // Deregister only after the normal DELETE succeeds. If a transient
+        // DB disconnect happens during release, keep the abnormal-exit
+        // cleanup hook alive rather than silently losing the last cleanup
+        // path and leaving a stale expired lock row behind.
+        deregister();
       },
     };
   }
@@ -269,11 +273,14 @@ export async function tryAcquireDbLock(
         );
       },
       release: async () => {
-        deregister();
         await db.query(
           `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND acquired_at = $3`,
           [lockId, pid, acquiredAt],
         );
+        // Match the PostgreSQL path: only deregister after release succeeds.
+        // If release throws, callers may retry and process-cleanup still owns
+        // a last-chance cleanup callback.
+        deregister();
       },
     };
   }

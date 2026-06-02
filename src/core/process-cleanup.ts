@@ -32,9 +32,9 @@
  *    already closed → DELETE fails silently → process exits anyway.
  *
  *  - Normal exit path unchanged: try/finally in `tryAcquireDbLock` and
- *    `withRefreshingLock` already releases on normal completion;
- *    deregister-before-release is atomic in single-threaded JS so no
- *    double-DELETE.
+ *    `withRefreshingLock` already releases on normal completion. Handles
+ *    deregister after successful DELETE, not before, so a transient release
+ *    failure does not silently drop the last cleanup callback.
  */
 
 const CLEANUP_DEADLINE_MS = 3_000;
