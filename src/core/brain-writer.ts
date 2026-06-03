@@ -74,6 +74,16 @@ export interface AuditReport {
 
 const SAMPLE_PER_SOURCE = 20;
 
+function isIntentionalDocusaurusRootSlug(relPath: string, content: string, err: ParseValidationError): boolean {
+  if (err.code !== 'SLUG_MISMATCH') return false;
+  const normalized = relPath.replace(/\\/g, '/').toLowerCase();
+  const isDocusaurusIndex =
+    normalized === 'website/docs/index.mdx' ||
+    normalized.endsWith('/docusaurus-plugin-content-docs/current/index.mdx');
+  if (!isDocusaurusIndex) return false;
+  return /^---[\s\S]*?^slug:\s*['"]?\/['"]?\s*$/m.test(content);
+}
+
 // ---------------------------------------------------------------------------
 // Frontmatter backups
 // ---------------------------------------------------------------------------
@@ -605,6 +615,7 @@ function scanOneSource(
     const expectedSlug = slugifyPath(relPath);
     const parsed = parseMarkdown(content, relPath, { validate: true, expectedSlug });
     const errs = (parsed.errors ?? []).filter((e) => {
+      if (isIntentionalDocusaurusRootSlug(relPath, content, e)) return false;
       if (e.code !== 'MISSING_OPEN') return true;
       if (opts.strictMissingOpen) return true;
       ignoredMissingOpen++;

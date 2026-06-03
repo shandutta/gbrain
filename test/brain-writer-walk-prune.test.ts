@@ -21,7 +21,7 @@ import { describe, expect, test, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { walkDir } from '../src/core/brain-writer.ts';
+import { scanBrainSources, walkDir } from '../src/core/brain-writer.ts';
 import { collectFiles } from '../src/commands/frontmatter.ts';
 
 let root: string;
@@ -56,6 +56,18 @@ beforeAll(() => {
   mkdirSync(join(root, 'people', 'submod'), { recursive: true });
   writeFileSync(join(root, 'people', 'submod', '.git'), 'gitdir: ../../.git/modules/submod\n');
   writeFileSync(join(root, 'people', 'submod', 'README.md'), '---\ntitle: submod page\n---\n');
+  // Docusaurus docs landing pages intentionally declare slug: / even though
+  // their path-derived GBrain slug is website/docs/index. Frontmatter audit
+  // should not ask operators to rewrite valid Docusaurus routing metadata.
+  mkdirSync(join(root, 'website', 'docs'), { recursive: true });
+  writeFileSync(join(root, 'website', 'docs', 'index.mdx'), [
+    '---',
+    'slug: /',
+    'title: Docs home',
+    '---',
+    '',
+    '# Docs home',
+  ].join('\n'));
 });
 
 afterAll(() => {
@@ -119,6 +131,15 @@ describe('walkDir (brain-writer.ts) — descent-time pruning', () => {
     walkDir(root, () => {}, (d) => descents.push(d));
     const vendor = descents.filter(d => /\/(node_modules|\.git|\.obsidian|ops|venv)(\/|$)/.test(d) || /\.raw$/.test(d));
     expect(vendor).toEqual([]);
+  });
+
+  test('frontmatter audit ignores intentional Docusaurus root index slug', async () => {
+    const engine = {
+      executeRaw: async () => [{ id: 'docs-source', local_path: root }],
+    } as any;
+    const report = await scanBrainSources(engine, { sourceId: 'docs-source' });
+    expect(report.errors_by_code.SLUG_MISMATCH ?? 0).toBe(0);
+    expect(report.per_source[0]?.sample.some(s => s.path === 'website/docs/index.mdx')).toBe(false);
   });
 });
 

@@ -77,8 +77,18 @@ describe('findBareTweetHits', () => {
   });
 
   test('does NOT trigger on already-cited "via X/handle" form', () => {
-    const hits = findBareTweetHits('Mentioned via X/garrytan earlier.', 'people/x');
-    expect(hits).toEqual([]);
+    const s = 'Connected via X/@shan to a public thread.';
+    expect(findBareTweetHits(s, 'p')).toEqual([]);
+  });
+
+  test('does NOT trigger on source-archive templates and tweet-media workflow prose', () => {
+    const s = [
+      '`- YYYY-MM-DD | Tweeted about {topic} [Source: X, @handle, {date}]`',
+      '**Problem:** Text-only collection misses visual context in tweet images --',
+      '- Article URL in tweet? Fetch and ingest via article workflow',
+      '- **X/Twitter** via x-cli ([#1285](https://github.com/NousResearch/hermes-agent/pull/1285))',
+    ].join('\n');
+    expect(findBareTweetHits(s, 'p')).toEqual([]);
   });
 
   test('only one hit per line even if multiple phrases match', () => {
@@ -194,6 +204,33 @@ describe('scanIntegrity', () => {
       timeline: '',
       frontmatter: {},
     });
+    await engine.putPage('src-commands-integrity-ts', {
+      type: 'code',
+      page_kind: 'code',
+      title: 'src/commands/integrity.ts',
+      compiled_truth: 'test("catches tweeted about phrases", () => {});',
+      timeline: '',
+      frontmatter: {},
+    });
+    await engine.putPage('bookmarks/x/example-status', {
+      type: 'bookmark',
+      title: 'Example X bookmark',
+      compiled_truth: [
+        '# Example X bookmark',
+        '',
+        '## Source',
+        '- X status: https://x.com/i/status/1234567890',
+        '',
+        '## Summary',
+        'The substance is in the tweet image, archived as the source page itself.',
+      ].join('\n'),
+      timeline: '',
+      frontmatter: {
+        source: 'x_bookmark',
+        tweet_id: '1234567890',
+        canonical_url: '',
+      },
+    });
     await engine.putPage('people/legacy', {
       type: 'person',
       title: 'Legacy',
@@ -221,6 +258,13 @@ describe('scanIntegrity', () => {
     const res = await scanIntegrity(engine);
     const slugs = res.bareHits.map(h => h.slug);
     expect(slugs).not.toContain('people/legacy');
+  });
+
+  test('skips code pages and X bookmark source archives', async () => {
+    const res = await scanIntegrity(engine);
+    const slugs = res.bareHits.map(h => h.slug);
+    expect(slugs).not.toContain('src-commands-integrity-ts');
+    expect(slugs).not.toContain('bookmarks/x/example-status');
   });
 
   test('honors limit', async () => {

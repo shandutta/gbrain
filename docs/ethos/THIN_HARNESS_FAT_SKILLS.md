@@ -164,7 +164,7 @@ I want to tell you about one more harness. Not for coding. For everything else.
 
 I run a personal AI agent on OpenClaw. It has a persona, knows who I am, and maintains a knowledge base of thousands of interconnected files. But the thing that makes it work is the exact same principle. Thin harness, fat skills.
 
-I tweeted about this a few days ago:
+The rule I use for this is:
 
 > *You are not allowed to do one-off work. If I ask you to do something and it's the kind of thing that will need to happen again, you must: do it manually the first time on 3 to 10 items. Show me the output. If I approve, codify it into a skill file. If it should run automatically, put it on a cron.*
 

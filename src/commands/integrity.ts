@@ -98,6 +98,13 @@ export function findBareTweetHits(compiledTruth: string, slug: string): BareTwee
     }
     // If the line already contains a tweet URL, it's cited — skip
     if (URL_NEARBY_RE.test(line)) continue;
+    const trimmed = line.trim();
+    // Skip templates/examples and pipeline prose that mention tweet artifacts,
+    // not uncited claims sourced from a tweet.
+    if (trimmed.startsWith('`') && trimmed.endsWith('`')) continue;
+    if (/tweet images?/i.test(line)) continue;
+    if (/\b(?:article|video) URL in tweet\?/i.test(line)) continue;
+    if (/X\/Twitter\*?\*?\s+via\s+x-cli/i.test(line)) continue;
     for (const re of BARE_TWEET_PHRASES) {
       const m = line.match(re);
       if (m) {
@@ -119,6 +126,30 @@ export interface ExternalLinkHit {
   slug: string;
   line: number;
   url: string;
+}
+
+function isXBookmarkSourceArchive(slug: string, type: string | undefined, frontmatter: Record<string, unknown> | undefined): boolean {
+  if (type !== 'bookmark') return false;
+  const source = typeof frontmatter?.source === 'string' ? frontmatter.source : '';
+  const tweetId = typeof frontmatter?.tweet_id === 'string' ? frontmatter.tweet_id : '';
+  const canonicalUrl = typeof frontmatter?.canonical_url === 'string' ? frontmatter.canonical_url : '';
+  return (
+    (slug.startsWith('bookmarks/x/') || source.startsWith('x_bookmark')) &&
+    !!tweetId &&
+    (!canonicalUrl || /https?:\/\/(?:x\.com|twitter\.com|mobile\.twitter\.com|nitter\.[^/]+)\//i.test(canonicalUrl))
+  );
+}
+
+function shouldScanIntegrityPage(page: {
+  slug: string;
+  type?: string;
+  page_kind?: string;
+  frontmatter?: Record<string, unknown>;
+}): boolean {
+  if (page.page_kind === 'code' || page.type === 'code') return false;
+  if (page.frontmatter?.validate === false) return false;
+  if (isXBookmarkSourceArchive(page.slug, page.type, page.frontmatter)) return false;
+  return true;
 }
 
 export function findExternalLinks(compiledTruth: string, slug: string): ExternalLinkHit[] {
@@ -332,8 +363,12 @@ export async function scanIntegrity(
     if (pagesScanned >= limit) break;
     const page = await engine.getPage(slug, { sourceId: source_id });
     if (!page) continue;
-    // Skip grandfathered pages (opted out of brain-integrity enforcement)
-    if ((page.frontmatter as Record<string, unknown> | undefined)?.validate === false) continue;
+    if (!shouldScanIntegrityPage({
+      slug,
+      type: page.type,
+      page_kind: page.page_kind,
+      frontmatter: page.frontmatter as Record<string, unknown> | undefined,
+    })) continue;
     pagesScanned++;
     bareHits.push(...findBareTweetHits(page.compiled_truth, slug));
     externalHits.push(...findExternalLinks(page.compiled_truth, slug));
@@ -370,9 +405,11 @@ async function scanIntegrityBatch(
   // listAllPageRefs() walk: integrity violations in non-default-source pages
   // get reported instead of silently shadowed by their default-source twin.
   const rows = await sql`
-    SELECT slug, compiled_truth, frontmatter
+    SELECT slug, type, page_kind, compiled_truth, frontmatter
     FROM pages
-    WHERE 1=1 ${typeCondition} ${validateCondition}
+    WHERE page_kind != 'code'
+      AND type != 'code'
+      ${typeCondition} ${validateCondition}
     ORDER BY source_id, slug
     LIMIT ${limit}
   `;
@@ -382,6 +419,10 @@ async function scanIntegrityBatch(
 
   for (const row of rows) {
     const slug = row.slug as string;
+    const type = row.type as string | undefined;
+    const pageKind = row.page_kind as string | undefined;
+    const frontmatter = row.frontmatter as Record<string, unknown> | undefined;
+    if (!shouldScanIntegrityPage({ slug, type, page_kind: pageKind, frontmatter })) continue;
     const compiledTruth = row.compiled_truth as string;
     bareHits.push(...findBareTweetHits(compiledTruth, slug));
     externalHits.push(...findExternalLinks(compiledTruth, slug));
