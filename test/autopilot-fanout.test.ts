@@ -13,7 +13,9 @@
 import { describe, test, expect } from 'bun:test';
 import {
   readLastFullCycleAt,
+  readLastSyncAt,
   isSourceStale,
+  isSourceSyncStale,
   selectSourcesForDispatch,
   resolveFanoutMax,
   dispatchPerSource,
@@ -47,6 +49,32 @@ describe('readLastFullCycleAt', () => {
   });
   test('returns null for unparseable string (codex P0-5 robustness)', () => {
     expect(readLastFullCycleAt(src('a', 'not-a-date'))).toBeNull();
+  });
+});
+
+describe('sync freshness helpers', () => {
+  const NOW = Date.parse('2026-05-22T12:00:00.000Z');
+  function withLastSync(id: string, last_sync_at?: string | Date | null): SourceRow {
+    return { ...src(id), last_sync_at } as SourceRow;
+  }
+
+  test('readLastSyncAt handles ISO strings, Date values, nulls, and garbage', () => {
+    expect(readLastSyncAt(withLastSync('iso', '2026-05-22T11:00:00.000Z'))!.toISOString()).toBe('2026-05-22T11:00:00.000Z');
+    expect(readLastSyncAt(withLastSync('date', new Date('2026-05-22T11:00:00.000Z')))!.toISOString()).toBe('2026-05-22T11:00:00.000Z');
+    expect(readLastSyncAt(withLastSync('none', null))).toBeNull();
+    expect(readLastSyncAt(withLastSync('bad', 'not-a-date'))).toBeNull();
+  });
+
+  test('sync freshness uses the slower 60-minute floor, not the 5-minute autopilot tick', () => {
+    expect(isSourceSyncStale(withLastSync('never'), NOW)).toBe(true);
+    expect(isSourceSyncStale(withLastSync('recent', new Date(NOW - 10 * 60_000).toISOString()), NOW)).toBe(false);
+    expect(isSourceSyncStale(withLastSync('old', new Date(NOW - 61 * 60_000).toISOString()), NOW)).toBe(true);
+  });
+
+  test('operator override floor still works for emergency tighter polling', () => {
+    const s = withLastSync('six-min-old', new Date(NOW - 6 * 60_000).toISOString());
+    expect(isSourceSyncStale(s, NOW, 5)).toBe(true);
+    expect(isSourceSyncStale(s, NOW, 60)).toBe(false);
   });
 });
 

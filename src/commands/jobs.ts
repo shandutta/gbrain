@@ -1288,8 +1288,31 @@ export async function registerBuiltinHandlers(
     const { performSync } = await import('./sync.ts');
     const repoPath = typeof job.data.repoPath === 'string' ? job.data.repoPath : undefined;
     const noPull = !!job.data.noPull;
-    // noEmbed defaults to true (embed is a separate job — submit `embed --stale`
-    // after sync, OR run via the autopilot cycle which has its own embed phase).
+    const sourceIdForJob = typeof job.data.sourceId === 'string'
+      ? (job.data.sourceId as string)
+      : undefined;
+    // Autopilot freshness jobs are a backstop, not the primary P0 owner.
+    // If another sync already owns the per-source lock, skip instead of
+    // burning retries and emitting noisy failure alerts behind the primary
+    // cycle/sync owner.
+    if (job.data.autopilot_freshness === true && sourceIdForJob) {
+      const { inspectLock, syncLockId } = await import('../core/db-lock.ts');
+      const snap = await inspectLock(engine, syncLockId(sourceIdForJob));
+      if (snap && !snap.ttl_expired) {
+        return {
+          status: 'skipped_lock_held',
+          fromCommit: null,
+          toCommit: '',
+          added: 0,
+          modified: 0,
+          deleted: 0,
+          renamed: 0,
+          chunksCreated: 0,
+          embedded: 0,
+          pagesAffected: [],
+        };
+      }
+    }
     // Caller can opt in by passing { noEmbed: false } in job params.
     const noEmbed = job.data.noEmbed !== false;
     // v0.22.13 (PR #490 CODEX-1): resolve sourceId from job param OR by looking
@@ -1297,8 +1320,7 @@ export async function registerBuiltinHandlers(
     // multi-source brain reads the global config.sync.last_commit anchor
     // instead of sources.last_commit, which on a regularly-GC'd repo can drop
     // out of git history and trigger 30-min full reimports every cycle.
-    let sourceId: string | undefined =
-      typeof job.data.sourceId === 'string' ? job.data.sourceId : undefined;
+    let sourceId: string | undefined = sourceIdForJob;
     if (!sourceId && repoPath) {
       try {
         const rows = await engine.executeRaw<{ id: string }>(

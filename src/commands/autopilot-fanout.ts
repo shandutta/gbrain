@@ -35,6 +35,39 @@ import type { MinionQueue } from '../core/minions/queue.ts';
 
 const FULL_CYCLE_FLOOR_MIN = 60;
 
+/**
+ * How often autopilot's lightweight per-source sync freshness pass should run.
+ *
+ * A full cycle already includes sync. If the freshness sync fires every
+ * autopilot tick (5min by default) while full cycles are also running, sync
+ * jobs race the cycle sync phase and mostly die on `gbrain-sync:*` locks. The
+ * sync lane is just a between-cycle GitHub-poll nudge, so give full cycles
+ * primary ownership and run this at a slower cadence.
+ */
+export const AUTOPILOT_SYNC_BACKSTOP_FLOOR_MIN = 60;
+export const SYNC_FRESHNESS_FLOOR_MIN = AUTOPILOT_SYNC_BACKSTOP_FLOOR_MIN;
+
+type SyncFreshnessSource = {
+  last_sync_at?: Date | string | null;
+};
+
+/** Read last_sync_at off a SourceRow. */
+export function readLastSyncAt(src: SyncFreshnessSource): Date | null {
+  const raw = src.last_sync_at;
+  if (raw === null || raw === undefined) return null;
+  if (raw instanceof Date) return Number.isFinite(raw.getTime()) ? raw : null;
+  if (typeof raw !== 'string') return null;
+  const d = new Date(raw);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+export function isSourceSyncStale(src: SyncFreshnessSource, now = Date.now(), floorMin = SYNC_FRESHNESS_FLOOR_MIN): boolean {
+  const last = readLastSyncAt(src);
+  if (last === null) return true;
+  const ageMin = (now - last.getTime()) / 60_000;
+  return ageMin >= floorMin;
+}
+
 export interface FanoutOpts {
   repoPath: string;
   slot: string;

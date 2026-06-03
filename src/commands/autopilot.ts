@@ -649,20 +649,27 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
           const { isFederatedV2Enabled } = await import('../core/feature-flags.ts');
           if (await isFederatedV2Enabled(engine)) {
             const { loadAllSources } = await import('../core/sources-load.ts');
+            const { SYNC_FRESHNESS_FLOOR_MIN, isSourceSyncStale } = await import('./autopilot-fanout.ts');
             const sources = await loadAllSources(engine);
-            const intervalMs = baseInterval * 1000;
+            const syncFreshnessFloorMinRaw = await engine.getConfig('autopilot.sync_freshness_floor_min');
+            const parsedSyncFreshnessFloorMin = syncFreshnessFloorMinRaw ? parseInt(syncFreshnessFloorMinRaw, 10) : NaN;
+            const syncFreshnessFloorMin =
+              Number.isFinite(parsedSyncFreshnessFloorMin) && parsedSyncFreshnessFloorMin >= 1
+                ? parsedSyncFreshnessFloorMin
+                : SYNC_FRESHNESS_FLOOR_MIN;
+            const syncBackstopSeconds = syncFreshnessFloorMin * 60;
             const now = Date.now();
             for (const src of sources) {
               if (!src.local_path) continue;
-              const lastSyncMs = src.last_sync_at ? new Date(src.last_sync_at).getTime() : 0;
-              const ageMs = now - lastSyncMs;
-              if (ageMs < intervalMs) continue; // fresh enough
+              if (!isSourceSyncStale(src, now, syncFreshnessFloorMin)) continue; // fresh enough
               try {
                 const job = await queue.add(
                   'sync',
                   {
                     sourceId: src.id,
                     repoPath: src.local_path,
+                    autopilot_freshness: true,
+                    syncBackstopSeconds,
                     auto_embed_backfill: true,
                     embed_reason: 'autopilot_freshness',
                   },
@@ -671,16 +678,20 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
                     idempotency_key: `autopilot-sync:${src.id}:${slot}`,
                     max_attempts: 2,
                     timeout_ms: timeoutMs,
+                    // One queued sync freshness nudge is enough; full cycles
+                    // remain the primary owner of source sync. This prevents
+                    // 5-minute tick bursts from stacking sync jobs behind a
+                    // long-running `gbrain-sync:<source>` lock.
                     maxWaiting: 1,
                   },
                 );
                 if (jsonMode) {
                   process.stderr.write(JSON.stringify({
                     event: 'dispatched', job_id: job.id, mode: 'freshness',
-                    source_id: src.id, age_ms: ageMs,
+                    source_id: src.id, sync_freshness_floor_min: syncFreshnessFloorMin,
                   }) + '\n');
                 } else {
-                  console.log(`[dispatch] job #${job.id} sync (freshness: ${src.id}; age=${Math.floor(ageMs / 60000)}min)`);
+                  console.log(`[dispatch] job #${job.id} sync (freshness: ${src.id}; floor=${syncFreshnessFloorMin}min)`);
                 }
               } catch (e) {
                 logError('dispatch.freshness', e);
