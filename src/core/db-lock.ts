@@ -26,6 +26,15 @@ import type { BrainEngine } from './engine.ts';
 
 export interface DbLockHandle {
   id: string;
+  /**
+   * Ownership token for this exact acquisition.
+   *
+   * Do not key release/refresh by acquired_at equality: PostgreSQL stores
+   * microseconds while JS Date commonly round-trips at millisecond precision,
+   * so `WHERE acquired_at = <JS Date>` can miss and strand a lock row until
+   * TTL/watchdog cleanup.
+   */
+  token: string;
   release: () => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -157,6 +166,7 @@ export async function tryAcquireDbLock(
   // v0.42.x (#1794): a holder that refreshed within this window is protected
   // from the ON CONFLICT steal even if its TTL lapsed (starved-but-alive).
   const stealGraceSeconds = resolveStealGraceSeconds(ttlMinutes);
+  const token = `${pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 
   // Engine-agnostic: prefer the engine's raw escape hatch (`sql` for postgres-js,
   // `db.query` for PGLite). Mirrors cycle.ts's pattern so behavior stays identical.
@@ -184,47 +194,48 @@ export async function tryAcquireDbLock(
     // acquired_at) to identify wedged-but-alive holders without stealing
     // healthy long-running holders that are actively refreshing.
     const rows: Array<{ id: string; acquired_at: Date | string }> = await sql`
-      INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at)
-      VALUES (${lockId}, ${pid}, ${host}, NOW(), NOW() + ${ttl}::interval, NOW())
+      INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at, token)
+      VALUES (${lockId}, ${pid}, ${host}, NOW(), NOW() + ${ttl}::interval, NOW(), ${token})
       ON CONFLICT (id) DO UPDATE
         SET holder_pid = ${pid},
             holder_host = ${host},
             acquired_at = NOW(),
             ttl_expires_at = NOW() + ${ttl}::interval,
-            last_refreshed_at = NOW()
+            last_refreshed_at = NOW(),
+            token = ${token}
         WHERE gbrain_cycle_locks.ttl_expires_at < NOW()
           AND (gbrain_cycle_locks.last_refreshed_at IS NULL
                OR gbrain_cycle_locks.last_refreshed_at < NOW() - ${stealGraceSeconds} * INTERVAL '1 second')
       RETURNING id, acquired_at
     `;
     if (rows.length === 0) return null;
-    const acquiredAt = rows[0].acquired_at;
     const deregister = registerCleanup(`db-lock:${lockId}`, async () => {
       await sql`
         DELETE FROM gbrain_cycle_locks
-        WHERE id = ${lockId} AND holder_pid = ${pid} AND acquired_at = ${acquiredAt}
+        WHERE id = ${lockId} AND holder_pid = ${pid} AND token = ${token}
       `;
     });
     return {
       id: lockId,
+      token,
       refresh: async () => {
         // v0.42.x (#1794): route through the DIRECT session pool, not the
         // transaction pool, so a Supavisor pooler exhaustion (EMAXCONNSESSION)
         // can't kill the heartbeat and let the live lock get stolen.
-        // Keep acquired_at in the predicate so stale same-PID handles cannot
+        // Keep token in the predicate so stale same-PID handles cannot
         // refresh/release a newer lock acquisition.
         await engine.executeRawDirect(
           `UPDATE gbrain_cycle_locks
               SET ttl_expires_at = NOW() + ($1)::interval,
                   last_refreshed_at = NOW()
-            WHERE id = $2 AND holder_pid = $3 AND acquired_at = $4`,
-          [ttl, lockId, pid, acquiredAt],
+            WHERE id = $2 AND holder_pid = $3 AND token = $4`,
+          [ttl, lockId, pid, token],
         );
       },
       release: async () => {
         await sql`
           DELETE FROM gbrain_cycle_locks
-          WHERE id = ${lockId} AND holder_pid = ${pid} AND acquired_at = ${acquiredAt}
+          WHERE id = ${lockId} AND holder_pid = ${pid} AND token = ${token}
         `;
         // Deregister only after the normal DELETE succeeds. If a transient
         // DB disconnect happens during release, keep the abnormal-exit
@@ -239,43 +250,44 @@ export async function tryAcquireDbLock(
     const db = maybePGLite.db;
     const ttl = `${ttlMinutes} minutes`;
     const { rows } = await db.query(
-      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at)
-       VALUES ($1, $2, $3, NOW(), NOW() + $4::interval, NOW())
+      `INSERT INTO gbrain_cycle_locks (id, holder_pid, holder_host, acquired_at, ttl_expires_at, last_refreshed_at, token)
+       VALUES ($1, $2, $3, NOW(), NOW() + $4::interval, NOW(), $5)
        ON CONFLICT (id) DO UPDATE
          SET holder_pid = $2,
              holder_host = $3,
              acquired_at = NOW(),
              ttl_expires_at = NOW() + $4::interval,
-             last_refreshed_at = NOW()
+             last_refreshed_at = NOW(),
+             token = $5
          WHERE gbrain_cycle_locks.ttl_expires_at < NOW()
            AND (gbrain_cycle_locks.last_refreshed_at IS NULL
-                OR gbrain_cycle_locks.last_refreshed_at < NOW() - $5 * INTERVAL '1 second')
+                OR gbrain_cycle_locks.last_refreshed_at < NOW() - $6 * INTERVAL '1 second')
        RETURNING id, acquired_at`,
-      [lockId, pid, host, ttl, stealGraceSeconds],
+      [lockId, pid, host, ttl, token, stealGraceSeconds],
     );
     if (rows.length === 0) return null;
-    const acquiredAt = (rows[0] as { acquired_at: Date | string }).acquired_at;
     const deregister = registerCleanup(`db-lock:${lockId}`, async () => {
       await db.query(
-        `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND acquired_at = $3`,
-        [lockId, pid, acquiredAt],
+        `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND token = $3`,
+        [lockId, pid, token],
       );
     });
     return {
       id: lockId,
+      token,
       refresh: async () => {
         await db.query(
           `UPDATE gbrain_cycle_locks
               SET ttl_expires_at = NOW() + $1::interval,
                   last_refreshed_at = NOW()
-            WHERE id = $2 AND holder_pid = $3 AND acquired_at = $4`,
-          [ttl, lockId, pid, acquiredAt],
+            WHERE id = $2 AND holder_pid = $3 AND token = $4`,
+          [ttl, lockId, pid, token],
         );
       },
       release: async () => {
         await db.query(
-          `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND acquired_at = $3`,
-          [lockId, pid, acquiredAt],
+          `DELETE FROM gbrain_cycle_locks WHERE id = $1 AND holder_pid = $2 AND token = $3`,
+          [lockId, pid, token],
         );
         // Match the PostgreSQL path: only deregister after release succeeds.
         // If release throws, callers may retry and process-cleanup still owns

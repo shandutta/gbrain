@@ -5288,7 +5288,25 @@ export const MIGRATIONS: Migration[] = [
            ON atom_extraction_attempts (source_id, content_hash16);`
       );
     },
-  }
+  },
+  {
+    version: 117,
+    name: 'cycle_lock_acquisition_token',
+    // Per-acquisition ownership token for gbrain_cycle_locks. Token avoids
+    // acquired_at precision mismatches while preserving same-PID stale-handle
+    // release/refresh safety.
+    idempotent: true,
+    sql: `
+      ALTER TABLE gbrain_cycle_locks
+        ADD COLUMN IF NOT EXISTS token TEXT;
+    `,
+    sqlFor: {
+      pglite: `
+        ALTER TABLE gbrain_cycle_locks
+          ADD COLUMN IF NOT EXISTS token TEXT;
+      `,
+    },
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

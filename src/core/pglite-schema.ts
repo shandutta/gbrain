@@ -580,6 +580,10 @@ CREATE TABLE IF NOT EXISTS gbrain_cycle_locks (
   holder_host        TEXT,
   acquired_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   ttl_expires_at     TIMESTAMPTZ NOT NULL,
+  -- v0.42.10.1 local patch: per-acquisition ownership token. JS Date
+  -- round-tripping can lose PostgreSQL microseconds, so lock release/refresh
+  -- must not key on acquired_at equality.
+  token              TEXT,
   -- v0.41.13.0 (migration v97 + D-V3-4): bumped on every withRefreshingLock
   -- refresh tick. Used by gbrain sync --break-lock --max-age <s> to identify
   -- wedged-but-alive holders without stealing healthy long-running holders
