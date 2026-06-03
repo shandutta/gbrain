@@ -3113,11 +3113,98 @@ export async function computeExtractAtomsBacklogCheck(
     let declared = false;
     try { declared = await packDeclaresPhase(engine, 'extract_atoms'); } catch { declared = false; }
 
+    // Richer details: per-source/per-type breakdown, sample slugs, failed attempts.
+    // All best-effort — if these queries fail (e.g. pre-v113 brain), we fall back
+    // to the existing minimal details without failing the check.
+    let backlogBySource: Record<string, number> | undefined;
+    let backlogByType: Record<string, number> | undefined;
+    let sampleSlugs: string[] | undefined;
+    let failedAttempts: number | undefined;
+
+    try {
+      const EXTRACTABLE_TYPES = [
+        'meeting', 'source', 'article', 'video', 'book', 'original',
+      ];
+      const MIN_CHARS = 500;
+      const baseWhere = `
+        WHERE p.type = ANY($1::text[])
+          AND p.deleted_at IS NULL
+          AND p.content_hash IS NOT NULL
+          AND COALESCE(p.frontmatter->>'imported_from',   '') <> 'markdown-greenfield'
+          AND COALESCE(p.frontmatter->>'dream_generated', '') <> 'true'
+          AND length(COALESCE(p.compiled_truth, '')) >= $2
+          AND NOT EXISTS (
+            SELECT 1 FROM pages atom
+            WHERE atom.type = 'atom' AND atom.source_id = p.source_id
+              AND atom.frontmatter->>'source_hash' = substring(p.content_hash from 1 for 16)
+              AND atom.deleted_at IS NULL
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM atom_extraction_attempts aea
+            WHERE aea.source_id = p.source_id
+              AND aea.content_hash16 = substring(p.content_hash from 1 for 16)
+              AND aea.status IN ('extracted', 'skipped')
+          )
+      `;
+      const baseParams: unknown[] = [EXTRACTABLE_TYPES as unknown as string[], MIN_CHARS];
+
+      const [bySourceRows, byTypeRows, slugRows] = await Promise.all([
+        engine.executeRaw<{ source_id: string; cnt: string }>(
+          `SELECT p.source_id, COUNT(*) AS cnt FROM pages p ${baseWhere} GROUP BY p.source_id`,
+          baseParams,
+        ).catch(() => []),
+        engine.executeRaw<{ type: string; cnt: string }>(
+          `SELECT p.type, COUNT(*) AS cnt FROM pages p ${baseWhere} GROUP BY p.type`,
+          baseParams,
+        ).catch(() => []),
+        engine.executeRaw<{ slug: string }>(
+          `SELECT p.slug FROM pages p ${baseWhere} ORDER BY p.updated_at DESC LIMIT 5`,
+          baseParams,
+        ).catch(() => []),
+      ]);
+
+      if (bySourceRows.length > 0) {
+        backlogBySource = Object.fromEntries(
+          bySourceRows.map(r => [r.source_id, Number(r.cnt)]),
+        );
+      }
+      if (byTypeRows.length > 0) {
+        backlogByType = Object.fromEntries(
+          byTypeRows.map(r => [r.type, Number(r.cnt)]),
+        );
+      }
+      if (slugRows.length > 0) {
+        sampleSlugs = slugRows.map(r => r.slug);
+      }
+    } catch { /* best-effort; minimal details still available */ }
+
+    // Count failed ledger attempts (best-effort: table may not exist pre-v113).
+    try {
+      const rows = await engine.executeRaw<{ cnt: string }>(
+        `SELECT COUNT(*) AS cnt FROM atom_extraction_attempts WHERE status = 'failed'`,
+        [],
+      );
+      failedAttempts = Number(rows[0]?.cnt ?? 0);
+    } catch { /* pre-v113 brain — skip */ }
+
+    const details = {
+      backlog,
+      pack_declares_phase: declared,
+      known_approximation: approx,
+      ...(backlogBySource !== undefined && { backlog_by_source: backlogBySource }),
+      ...(backlogByType !== undefined && { backlog_by_type: backlogByType }),
+      ...(sampleSlugs !== undefined && { sample_slugs: sampleSlugs }),
+      ...(failedAttempts !== undefined && failedAttempts > 0 && { failed_attempts: failedAttempts }),
+    };
+
     if (backlog === 0) {
+      const failedNote = failedAttempts && failedAttempts > 0
+        ? ` (${failedAttempts} prior failed attempt(s) will retry next cycle)`
+        : '';
       return {
         name, status: 'ok',
-        message: 'no pages awaiting atom extraction',
-        details: { backlog, pack_declares_phase: declared, known_approximation: approx },
+        message: `no pages awaiting atom extraction${failedNote}`,
+        details,
       };
     }
 
@@ -3128,7 +3215,7 @@ export async function computeExtractAtomsBacklogCheck(
       return {
         name, status: 'warn',
         message: `${backlog} pages eligible for atom extraction but the active pack does not run extract_atoms — backlog growing. Fix: ${fix}`,
-        details: { backlog, pack_declares_phase: false, fix_hint: fix, known_approximation: approx },
+        details: { ...details, fix_hint: fix },
       };
     }
 
@@ -3137,7 +3224,7 @@ export async function computeExtractAtomsBacklogCheck(
       return {
         name, status: 'ok',
         message: `${backlog} page(s) pending; active pack runs extract_atoms each cycle`,
-        details: { backlog, pack_declares_phase: true, known_approximation: approx },
+        details,
       };
     }
 
@@ -3145,7 +3232,7 @@ export async function computeExtractAtomsBacklogCheck(
     return {
       name, status: 'ok',
       message: `${backlog} page(s) eligible (below warn threshold; pack does not run extract_atoms)`,
-      details: { backlog, pack_declares_phase: false, known_approximation: approx },
+      details,
     };
   } catch (err) {
     return { name, status: 'warn', message: `extract_atoms_backlog check failed: ${(err as Error).message}` };
@@ -3223,6 +3310,27 @@ export async function computeExtractHealthCheck(
       };
     }
 
+    let atomAttemptSuccesses7d = 0;
+    try {
+      type AtomAttemptRow = { count: number | string };
+      const atomAttemptRows = await engine.executeRaw<AtomAttemptRow>(
+        `SELECT COUNT(*) AS count
+           FROM atom_extraction_attempts
+          WHERE attempted_at >= CURRENT_DATE - 7
+            AND status IN ('extracted', 'skipped')`,
+        [],
+      );
+      atomAttemptSuccesses7d = Number(atomAttemptRows[0]?.count) || 0;
+    } catch (err) {
+      // Pre-ledger brains (or fresh test fixtures) still use the rollup-only
+      // denominator below. Do not turn a doctor health check into a migration
+      // warning; the migration framework handles schema drift separately.
+      const msg = (err as Error).message || String(err);
+      if (!/atom_extraction_attempts.*does not exist|no such table/i.test(msg)) {
+        throw err;
+      }
+    }
+
     type KindAggregate = {
       kind: string;
       cost_7d_usd: number;
@@ -3230,6 +3338,7 @@ export async function computeExtractHealthCheck(
       eval_fail_count: number;
       halt_count: number;
       round_completed_count: number;
+      attempt_success_count?: number;
       halt_rate: number;
       last_updated_at: string | null;
     };
@@ -3237,7 +3346,12 @@ export async function computeExtractHealthCheck(
     const kinds: KindAggregate[] = rows.map(r => {
       const halts = Number(r.halt_count) || 0;
       const completed = Number(r.round_completed_count) || 0;
-      const total = halts + completed;
+      // Atom extraction is page-attempt based: one drain round can extract many
+      // pages after earlier no-progress / missing-secret halts. Use the durable
+      // attempt ledger as the success denominator so historical retry halts do
+      // not keep the doctor red after the backlog has actually been processed.
+      const attemptSuccesses = r.kind === 'atoms' ? atomAttemptSuccesses7d : 0;
+      const total = halts + completed + attemptSuccesses;
       return {
         kind: r.kind,
         cost_7d_usd: Number(r.cost_7d_usd) || 0,
@@ -3245,6 +3359,7 @@ export async function computeExtractHealthCheck(
         eval_fail_count: Number(r.eval_fail_count) || 0,
         halt_count: halts,
         round_completed_count: completed,
+        ...(r.kind === 'atoms' ? { attempt_success_count: attemptSuccesses } : {}),
         halt_rate: total > 0 ? halts / total : 0,
         last_updated_at: r.last_updated_at
           ? new Date(r.last_updated_at).toISOString()

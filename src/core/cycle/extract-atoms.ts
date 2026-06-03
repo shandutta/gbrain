@@ -190,6 +190,13 @@ export async function discoverExtractablePages(
           AND atom.frontmatter->>'source_hash' = substring(p.content_hash from 1 for 16)
           AND atom.deleted_at IS NULL
       )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM atom_extraction_attempts aea
+        WHERE aea.source_id = $1
+          AND aea.content_hash16 = substring(p.content_hash from 1 for 16)
+          AND aea.status IN ('extracted', 'skipped')
+      )
     ORDER BY p.updated_at DESC
     LIMIT $4
   `;
@@ -258,6 +265,12 @@ export async function countExtractAtomsBacklog(
              WHERE atom.type = 'atom' AND atom.source_id = $1
                AND atom.frontmatter->>'source_hash' = substring(p.content_hash from 1 for 16)
                AND atom.deleted_at IS NULL
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM atom_extraction_attempts aea
+             WHERE aea.source_id = $1
+               AND aea.content_hash16 = substring(p.content_hash from 1 for 16)
+               AND aea.status IN ('extracted', 'skipped')
            )`
       : `SELECT COUNT(*) AS cnt FROM pages p
          WHERE p.type = ANY($1::text[])
@@ -271,6 +284,12 @@ export async function countExtractAtomsBacklog(
              WHERE atom.type = 'atom' AND atom.source_id = p.source_id
                AND atom.frontmatter->>'source_hash' = substring(p.content_hash from 1 for 16)
                AND atom.deleted_at IS NULL
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM atom_extraction_attempts aea
+             WHERE aea.source_id = p.source_id
+               AND aea.content_hash16 = substring(p.content_hash from 1 for 16)
+               AND aea.status IN ('extracted', 'skipped')
            )`;
     const params = scoped
       ? [sourceId, EXTRACTABLE_PAGE_TYPES as unknown as string[], MIN_PAGE_CHARS_FOR_EXTRACTION]
@@ -321,6 +340,61 @@ export async function atomsExistingForHashes(
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[extract_atoms] batch idempotency check failed (assuming none extracted): ${msg}`);
     return new Set();
+  }
+}
+
+/**
+ * Writes (or updates) a terminal ledger row for the given page in
+ * `atom_extraction_attempts`. Called by `runPhaseExtractAtoms` after each
+ * per-item attempt so subsequent cycles can skip already-resolved pages.
+ *
+ * Design:
+ *   extracted — atoms were written; exclude from backlog (belt-and-suspenders
+ *               on top of the NOT EXISTS pages check).
+ *   skipped   — LLM returned [] (nothing noteworthy); exclude from backlog.
+ *   failed    — exception during extraction; NOT excluded from backlog so the
+ *               next cycle retries, but the count surfaces in doctor.
+ *
+ * Fail-soft: never throws. A ledger write failure is logged and ignored so
+ * extraction itself is never blocked by an audit side-effect.
+ */
+export async function upsertAtomExtractionAttempt(
+  engine: BrainEngine,
+  opts: {
+    sourceId: string;
+    sourceSlug?: string;
+    contentHash16: string;
+    status: 'extracted' | 'skipped' | 'failed';
+    reason?: string;
+    model?: string;
+    error?: string;
+  },
+): Promise<void> {
+  try {
+    await engine.executeRaw(
+      `INSERT INTO atom_extraction_attempts
+         (source_id, source_slug, content_hash16, status, reason, attempted_at, model, error)
+       VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7)
+       ON CONFLICT (source_id, content_hash16) DO UPDATE SET
+         status       = EXCLUDED.status,
+         source_slug  = EXCLUDED.source_slug,
+         reason       = EXCLUDED.reason,
+         attempted_at = NOW(),
+         model        = EXCLUDED.model,
+         error        = EXCLUDED.error`,
+      [
+        opts.sourceId,
+        opts.sourceSlug ?? null,
+        opts.contentHash16,
+        opts.status,
+        opts.reason ?? null,
+        opts.model ?? null,
+        opts.error ?? null,
+      ],
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[extract_atoms] ledger write failed (non-fatal): ${msg}`);
   }
 }
 
@@ -512,6 +586,19 @@ export async function runPhaseExtractAtoms(
       if (atoms.length === 0) {
         if (item.kind === 'transcript') transcriptsProcessed++;
         else pagesProcessed++;
+        // Record terminal "skipped" in ledger so subsequent cycles exclude
+        // this page from the backlog. Prevents the 100%-halt-rate loop where
+        // the LLM consistently finds nothing and the page re-queues forever.
+        if (!opts.dryRun) {
+          const sourceSlug = item.kind === 'page' ? item.slug : undefined;
+          await upsertAtomExtractionAttempt(engine, {
+            sourceId,
+            sourceSlug,
+            contentHash16: item.contentHash.slice(0, 16),
+            status: 'skipped',
+            reason: 'empty_model_output',
+          });
+        }
         continue;
       }
 
@@ -549,6 +636,16 @@ export async function runPhaseExtractAtoms(
           );
           totalAtomsExtracted++;
         }
+        // Record terminal "extracted" in ledger (belt-and-suspenders: the
+        // NOT EXISTS pages check already excludes the page, but the ledger
+        // record is the canonical terminal state for the status query).
+        const sourceSlug = item.kind === 'page' ? item.slug : undefined;
+        await upsertAtomExtractionAttempt(engine, {
+          sourceId,
+          sourceSlug,
+          contentHash16: item.contentHash.slice(0, 16),
+          status: 'extracted',
+        });
       } else {
         totalAtomsExtracted += atoms.length; // count for dry-run reporting
       }
@@ -558,10 +655,21 @@ export async function runPhaseExtractAtoms(
       // Reporter rate-limits to ~1 line/sec; safe to tick every iter.
       opts.progress?.tick(1, `${totalAtomsExtracted} atoms / ${duplicatesSkipped} skipped`);
     } catch (err) {
-      failures.push({
-        source: originLabel,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const errMsg = err instanceof Error ? err.message : String(err);
+      failures.push({ source: originLabel, error: errMsg });
+      // Record "failed" in ledger. NOT excluded from backlog — the next cycle
+      // retries this page. The count surfaces in doctor as "failed_attempts"
+      // so transient errors are visible rather than silently looping.
+      if (!opts.dryRun) {
+        const sourceSlug = item.kind === 'page' ? item.slug : undefined;
+        await upsertAtomExtractionAttempt(engine, {
+          sourceId,
+          sourceSlug,
+          contentHash16: item.contentHash.slice(0, 16),
+          status: 'failed',
+          error: errMsg.slice(0, 500),
+        });
+      }
     }
   }
 

@@ -26,6 +26,7 @@ afterAll(async () => {
 
 async function clearRollup() {
   await engine.executeRaw('DELETE FROM extract_rollup_7d', []);
+  await engine.executeRaw('DELETE FROM atom_extraction_attempts', []);
 }
 
 describe('computeExtractHealthCheck — empty + happy paths', () => {
@@ -89,6 +90,26 @@ describe('computeExtractHealthCheck — WARN paths', () => {
     expect(check.message).toContain('facts.conversation');
     expect(check.message).toContain('atoms');
     expect(check.message).toContain('concepts');
+  });
+
+  test('atoms halt rate uses extraction attempt ledger successes as denominator', async () => {
+    await clearRollup();
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d (kind, source_id, day, cost_usd, eval_pass_count, eval_fail_count, halt_count, round_completed_count, rollup_write_failures, updated_at)
+       VALUES ('atoms', 'default', CURRENT_DATE, 0.35, 0, 0, 3, 2, 0, NOW())`,
+      [],
+    );
+    for (let i = 0; i < 82; i++) {
+      await engine.executeRaw(
+        `INSERT INTO atom_extraction_attempts (source_id, source_slug, content_hash16, status, attempted_at)
+         VALUES ('default', 'page-' || $1, 'hash-' || $1, 'extracted', NOW())`,
+        [String(i).padStart(2, '0')],
+      );
+    }
+    const check = await computeExtractHealthCheck(engine);
+    expect(check.status).toBe('ok');
+    expect((check.details as any)?.kinds[0].attempt_success_count).toBe(82);
+    expect((check.details as any)?.kinds[0].halt_rate).toBeCloseTo(3 / 87, 4);
   });
 
   test('rollup_write_failures > 0 with clean halt rates returns WARN', async () => {

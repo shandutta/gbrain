@@ -1065,6 +1065,25 @@ CREATE INDEX IF NOT EXISTS page_aliases_lookup_idx
   ON page_aliases (source_id, alias_norm);
 CREATE INDEX IF NOT EXISTS page_aliases_slug_idx
   ON page_aliases (source_id, slug);
+
+-- v0.42 extract_atoms ledger — records terminal outcomes per (source_id,
+-- content_hash16) so "skipped" (empty model output) and "extracted" pages
+-- are excluded from the backlog on subsequent cycles. "failed" rows are
+-- kept in the backlog for retry but surfaced separately in doctor.
+CREATE TABLE IF NOT EXISTS atom_extraction_attempts (
+  id              BIGSERIAL PRIMARY KEY,
+  source_id       TEXT NOT NULL DEFAULT 'default',
+  source_slug     TEXT,
+  content_hash16  TEXT NOT NULL,
+  status          TEXT NOT NULL
+                  CHECK (status IN ('extracted', 'skipped', 'failed')),
+  reason          TEXT,
+  attempted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  model           TEXT,
+  error           TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS atom_extraction_attempts_uq
+  ON atom_extraction_attempts (source_id, content_hash16);
 `;
 
 /**

@@ -5130,19 +5130,6 @@ export const MIGRATIONS: Migration[] = [
     // trailing/double dash, underscore, space) + char_length <= 64 cap on the
     // indexed free-text column. The five prior built-ins all satisfy the regex,
     // so existing rows pass `VALIDATE` and the constraint swap never fails.
-    //
-    // DELIBERATELY diverges from the v95/v113 plain DROP+ADD pattern: on real
-    // Postgres a plain `ADD CONSTRAINT ... CHECK` takes ACCESS EXCLUSIVE + a
-    // full-table validation scan, which can stall writes on a large `links`
-    // table. The postgres branch instead does `ADD ... NOT VALID` (instant,
-    // no scan) then `VALIDATE CONSTRAINT` (scans under SHARE UPDATE EXCLUSIVE,
-    // does not block reads/writes). That two-phase form requires running
-    // OUTSIDE a transaction → `transaction: false`. PGLite (single-writer WASM,
-    // no lock concern) keeps the plain one-shot DROP+ADD, and is the branch the
-    // schema-version hash reads (pglite-engine.ts).
-    //
-    // Idempotent via DROP ... IF EXISTS; no-ops on installs that never created
-    // the constraint and safe to re-run.
     idempotent: true,
     transaction: false,
     sql: '', // engine-specific via sqlFor (postgres two-phase vs pglite one-shot)
@@ -5270,6 +5257,38 @@ export const MIGRATIONS: Migration[] = [
         ON context_volunteer_events (source_id, slug);
     `,
   },
+  {
+    // Renumbered 117 -> 120 at merge: upstream v0.42.43.0 claimed v117
+    // for context_volunteer_events_table.
+    version: 120,
+    name: 'atom_extraction_attempts',
+    // Tracks terminal outcomes for extract_atoms per (source_id, content_hash16).
+    // Empty atom lists are terminal "skipped" attempts so pages do not loop in
+    // the extraction backlog forever; transient failures remain retryable.
+    sql: '',
+    handler: async (engine) => {
+      await engine.runMigration(
+        120,
+        `CREATE TABLE IF NOT EXISTS atom_extraction_attempts (
+           id              BIGSERIAL PRIMARY KEY,
+           source_id       TEXT NOT NULL DEFAULT 'default',
+           source_slug     TEXT,
+           content_hash16  TEXT NOT NULL,
+           status          TEXT NOT NULL
+                           CHECK (status IN ('extracted', 'skipped', 'failed')),
+           reason          TEXT,
+           attempted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+           model           TEXT,
+           error           TEXT
+         );`
+      );
+      await engine.runMigration(
+        120,
+        `CREATE UNIQUE INDEX IF NOT EXISTS atom_extraction_attempts_uq
+           ON atom_extraction_attempts (source_id, content_hash16);`
+      );
+    },
+  }
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0
