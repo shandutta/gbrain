@@ -49,7 +49,7 @@ beforeAll(() => {
   writeFileSync(join(root, 'people', 'tools', 'node_modules', 'inner', 'a.md'), '---\ntitle: nope\n---\n');
   // Python virtualenv — venv lacks a leading dot so it must be in PRUNE_DIR_NAMES explicitly.
   // The reporter bug that motivated this: gbrain doctor flagged HuggingFace template
-  // markdown under ~/.hermes/hermes-agent/venv/lib/…/huggingface_hub/templates/.
+  // markdown under ~/agent-runtime/venv/lib/…/huggingface_hub/templates/.
   mkdirSync(join(root, 'venv', 'lib', 'python3.11', 'site-packages', 'huggingface_hub', 'templates'), { recursive: true });
   writeFileSync(join(root, 'venv', 'lib', 'python3.11', 'site-packages', 'huggingface_hub', 'templates', 'modelcard_template.md'), '---\ntitle: vendored\n---\n');
   // Git-submodule pattern: a dir containing `.git` as a FILE (gitfile).

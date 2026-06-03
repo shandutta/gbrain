@@ -59,7 +59,7 @@ describe('isGenuineConversationPage', () => {
 
   describe('explicit `type: conversation` is always trusted', () => {
     test('nested explicit conversation type is trusted', () => {
-      expect(isGenuineConversationPage(page('wintermute/chat/2026-05-30-foo', 'conversation'))).toBe(
+      expect(isGenuineConversationPage(page('agent-fork/chat/2026-05-30-foo', 'conversation'))).toBe(
         true,
       );
     });
