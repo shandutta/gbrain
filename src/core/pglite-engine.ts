@@ -59,6 +59,7 @@ import {
   EmbeddingColumnNotRegisteredError,
 } from './search/embedding-column.ts';
 import { hasCJK, escapeLikePattern } from './cjk.ts';
+import { LINK_EXTRACTOR_VERSION_TS } from './link-extraction.ts';
 
 type PGLiteDB = PGlite;
 
@@ -4676,7 +4677,10 @@ export class PGLiteEngine implements BrainEngine {
           GREATEST((SELECT count(*) FROM content_chunks), 1)::float as embed_coverage,
         (SELECT count(*) FROM pages p
          WHERE p.source_id = 'default'
-           AND p.updated_at < (SELECT MAX(te.created_at) FROM timeline_entries te WHERE te.page_id = p.id)
+           AND p.deleted_at IS NULL
+           AND (p.links_extracted_at IS NULL
+             OR p.links_extracted_at < $1::timestamptz
+             OR p.updated_at > p.links_extracted_at)
         ) as stale_pages,
         -- Bug 11 — orphan = islanded (no inbound AND no outbound).
         -- See BrainHealth.orphan_pages docstring; docs updated to match this.
@@ -4700,7 +4704,7 @@ export class PGLiteEngine implements BrainEngine {
         (SELECT count(*) FROM entity_pages e
          WHERE EXISTS (SELECT 1 FROM timeline_entries te WHERE te.page_id = e.id))::float /
           GREATEST((SELECT count(*) FROM entity_pages), 1)::float as timeline_coverage
-    `);
+    `, [LINK_EXTRACTOR_VERSION_TS]);
 
     // Top 5 most connected entities by total link count (in + out).
     const { rows: connected } = await this.db.query(`

@@ -964,6 +964,23 @@ describe('PGLiteEngine: Stats & Health', () => {
     expect(health.missing_embeddings).toBe(1); // chunk has no embedding
     expect(health.embed_coverage).toBe(0);
   });
+
+  test('getHealth reports extraction-stale pages from links_extracted_at, not timeline row timestamps', async () => {
+    await truncateAll();
+    await engine.putPage('people/stale-health', { ...testPage, type: 'person', title: 'Stale Health' });
+
+    let health = await engine.getHealth();
+    expect(health.stale_pages).toBe(1);
+
+    await engine.markPagesExtractedBatch([
+      { slug: 'people/stale-health', source_id: 'default' },
+    ], new Date().toISOString());
+    await engine.addTimelineEntry('people/stale-health', { date: '2026-06-05', summary: 'Timeline extracted after page import' });
+
+    health = await engine.getHealth();
+    expect(health.stale_pages).toBe(0);
+    expect(await engine.countStalePagesForExtraction()).toBe(0);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────

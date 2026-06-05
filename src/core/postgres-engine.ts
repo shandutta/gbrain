@@ -61,6 +61,7 @@ import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildRecencyComponentSql, buildBestPerPagePoolCte } from './search/sql-ranking.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defaults.ts';
 import { DELETE_BATCH_SIZE } from './engine-constants.ts';
+import { LINK_EXTRACTOR_VERSION_TS } from './link-extraction.ts';
 
 function escapeSqlStringLiteral(value: string): string {
   return value.replace(/'/g, "''");
@@ -4726,7 +4727,10 @@ export class PostgresEngine implements BrainEngine {
           GREATEST((SELECT count(*) FROM content_chunks), 1)::float as embed_coverage,
         (SELECT count(*) FROM pages p
          WHERE p.source_id = 'default'
-           AND p.updated_at < (SELECT MAX(te.created_at) FROM timeline_entries te WHERE te.page_id = p.id)
+           AND p.deleted_at IS NULL
+           AND (p.links_extracted_at IS NULL
+             OR p.links_extracted_at < ${LINK_EXTRACTOR_VERSION_TS}::timestamptz
+             OR p.updated_at > p.links_extracted_at)
         ) as stale_pages,
         (SELECT count(*) FROM scoreable_pages p
          WHERE NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
