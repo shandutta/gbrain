@@ -989,16 +989,24 @@ export async function importFromFile(
       };
     }
   } else if (parsed.slug !== expectedSlug) {
-    // Anti-spoof preserved: path DOES derive a slug, but the frontmatter slug
-    // claims a different one. Reject.
-    return {
-      slug: expectedSlug,
-      status: 'skipped',
-      chunks: 0,
-      error:
-        `Frontmatter slug "${parsed.slug}" does not match path-derived slug "${expectedSlug}" ` +
-        `(from ${relativePath}). Remove the frontmatter "slug:" line or move the file.`,
-    };
+    const normalizedPath = relativePath.replace(/\\/g, '/').toLowerCase();
+    const isDocusaurusRootIndex =
+      parsed.slug === '/' &&
+      (normalizedPath === 'website/docs/index.mdx' ||
+        normalizedPath.endsWith('/docusaurus-plugin-content-docs/current/index.mdx'));
+
+    if (!isDocusaurusRootIndex) {
+      // Anti-spoof preserved: path DOES derive a slug, but the frontmatter slug
+      // claims a different one. Reject.
+      return {
+        slug: expectedSlug,
+        status: 'skipped',
+        chunks: 0,
+        error:
+          `Frontmatter slug "${parsed.slug}" does not match path-derived slug "${expectedSlug}" ` +
+          `(from ${relativePath}). Remove the frontmatter "slug:" line or move the file.`,
+      };
+    }
   }
 
   // Emit the dual-channel audit entry AFTER we know we're not going to

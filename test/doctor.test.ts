@@ -78,7 +78,7 @@ describe('doctor command', () => {
     const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
     // The source-aware message must reference the variable name so users
     // know where their URL is coming from.
-    expect(source).toContain('Skipping DB checks (--fast mode, URL present from');
+    expect(source).toContain('DB checks intentionally skipped (--fast mode, URL present from');
     // The null-source fallback must still mention both config + env paths.
     expect(source).toContain('GBRAIN_DATABASE_URL');
   });
@@ -1342,5 +1342,20 @@ describe('v0.42 (#1699) — quarantined_pages + flagged_pages checks', () => {
     // Each emits a named check.
     expect(source).toMatch(/name: 'quarantined_pages'/);
     expect(source).toMatch(/name: 'flagged_pages'/);
+  });
+
+  test('flagged_pages follows doctor_scoreable source policy', async () => {
+    const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
+    const block = source.slice(
+      source.indexOf("progress.heartbeat('flagged_pages')"),
+      source.indexOf('// 11a. Frontmatter integrity'),
+    );
+
+    // Imported code/artifact sources can legitimately carry generated oversized
+    // or markup-heavy pages. Doctor should score operator-owned sources only,
+    // matching oversized_pages and content_sanity_audit_recent.
+    expect(block).toContain('LEFT JOIN sources s ON s.id = p.source_id');
+    expect(block).toContain("doctor_scoreable");
+    expect(block).toContain("CASE WHEN p.source_id = 'default' THEN 'true' ELSE 'false' END");
   });
 });

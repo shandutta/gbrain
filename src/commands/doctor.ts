@@ -6432,7 +6432,12 @@ export async function buildChecks(
   progress.heartbeat('flagged_pages');
   try {
     const rows = await engine.executeRaw<{ n: string | number }>(
-      `SELECT COUNT(*)::int AS n FROM pages p WHERE p.deleted_at IS NULL AND p.frontmatter ? 'content_flag'`,
+      `SELECT COUNT(*)::int AS n
+         FROM pages p
+         LEFT JOIN sources s ON s.id = p.source_id
+        WHERE p.deleted_at IS NULL
+          AND COALESCE(s.config->>'doctor_scoreable', CASE WHEN p.source_id = 'default' THEN 'true' ELSE 'false' END) = 'true'
+          AND p.frontmatter ? 'content_flag'`,
     );
     const n = Number(rows[0]?.n ?? 0);
     // Flagged pages are "examine me", not "broken" — warn so they're visible

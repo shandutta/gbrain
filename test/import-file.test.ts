@@ -6,6 +6,7 @@ import type { BrainEngine } from '../src/core/engine.ts';
 import { MARKDOWN_CHUNKER_VERSION } from '../src/core/chunkers/recursive.ts';
 
 const TMP = join(import.meta.dir, '.tmp-import-test');
+const ORIGINAL_GBRAIN_AUDIT_DIR = process.env.GBRAIN_AUDIT_DIR;
 
 // Minimal mock engine that tracks calls and supports transaction()
 function mockEngine(overrides: Partial<Record<string, any>> = {}): BrainEngine {
@@ -31,9 +32,15 @@ function mockEngine(overrides: Partial<Record<string, any>> = {}): BrainEngine {
 
 beforeAll(() => {
   mkdirSync(TMP, { recursive: true });
+  process.env.GBRAIN_AUDIT_DIR = join(TMP, 'audit');
 });
 
 afterAll(() => {
+  if (ORIGINAL_GBRAIN_AUDIT_DIR === undefined) {
+    delete process.env.GBRAIN_AUDIT_DIR;
+  } else {
+    process.env.GBRAIN_AUDIT_DIR = ORIGINAL_GBRAIN_AUDIT_DIR;
+  }
   rmSync(TMP, { recursive: true, force: true });
 });
 
@@ -130,6 +137,31 @@ Legit content.
 
     expect(result.status).toBe('imported');
     expect(result.slug).toBe('people/alice-smith');
+  });
+
+  test('accepts Docusaurus docs root slug on homepage index files', async () => {
+    // Docusaurus uses `slug: /` for docs home pages. GBrain should keep the
+    // filesystem-derived page slug for storage instead of treating valid
+    // Docusaurus routing metadata as a sync-blocking spoof attempt.
+    const filePath = join(TMP, 'docs-index.mdx');
+    writeFileSync(filePath, `---
+type: guide
+title: Docs home
+slug: /
+---
+
+# Docs home
+`);
+
+    const engine = mockEngine();
+    const result = await importFile(engine, filePath, 'website/docs/index.mdx', { noEmbed: true });
+
+    expect(result.status).toBe('imported');
+    expect(result.slug).toBe('website/docs/index');
+
+    const calls = (engine as any)._calls;
+    const putCall = calls.find((c: any) => c.method === 'putPage');
+    expect(putCall?.args[0]).toBe('website/docs/index');
   });
 
   test('uses path-derived slug when no frontmatter slug is set', async () => {
