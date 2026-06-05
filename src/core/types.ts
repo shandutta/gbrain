@@ -80,6 +80,11 @@ export interface Page {
   id: number;
   slug: string;
   type: PageType;
+  /**
+   * v0.19.0: distinguishes markdown vs code/image pages at the DB level.
+   * Older projections may omit it; callers that care should tolerate undefined.
+   */
+  page_kind?: PageKind;
   title: string;
   compiled_truth: string;
   timeline: string;

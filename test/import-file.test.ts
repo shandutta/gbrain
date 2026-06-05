@@ -4,9 +4,9 @@ import { join } from 'path';
 import { importFile, importFromContent } from '../src/core/import-file.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { MARKDOWN_CHUNKER_VERSION } from '../src/core/chunkers/recursive.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 const TMP = join(import.meta.dir, '.tmp-import-test');
-const ORIGINAL_GBRAIN_AUDIT_DIR = process.env.GBRAIN_AUDIT_DIR;
 
 // Minimal mock engine that tracks calls and supports transaction()
 function mockEngine(overrides: Partial<Record<string, any>> = {}): BrainEngine {
@@ -32,15 +32,9 @@ function mockEngine(overrides: Partial<Record<string, any>> = {}): BrainEngine {
 
 beforeAll(() => {
   mkdirSync(TMP, { recursive: true });
-  process.env.GBRAIN_AUDIT_DIR = join(TMP, 'audit');
 });
 
 afterAll(() => {
-  if (ORIGINAL_GBRAIN_AUDIT_DIR === undefined) {
-    delete process.env.GBRAIN_AUDIT_DIR;
-  } else {
-    process.env.GBRAIN_AUDIT_DIR = ORIGINAL_GBRAIN_AUDIT_DIR;
-  }
   rmSync(TMP, { recursive: true, force: true });
 });
 
@@ -409,14 +403,16 @@ Content to chunk but not embed.
   });
 
   test('accepts in-memory content just under MAX_FILE_SIZE', async () => {
-    // Sanity: content exactly at the limit must still import. If this test
-    // fails, the guard is off-by-one and will break legitimate large imports.
-    const content = '---\ntitle: Borderline\n---\n' + 'x'.repeat(4_900_000);
+    await withEnv({ GBRAIN_AUDIT_DIR: join(TMP, 'audit') }, async () => {
+      // Sanity: content exactly at the limit must still import. If this test
+      // fails, the guard is off-by-one and will break legitimate large imports.
+      const content = '---\ntitle: Borderline\n---\n' + 'x'.repeat(4_900_000);
 
-    const engine = mockEngine();
-    const result = await importFromContent(engine, 'borderline-slug', content, { noEmbed: true });
+      const engine = mockEngine();
+      const result = await importFromContent(engine, 'borderline-slug', content, { noEmbed: true });
 
-    expect(result.status).toBe('imported');
+      expect(result.status).toBe('imported');
+    });
   });
 
   test('assigns sequential chunk_index values', async () => {

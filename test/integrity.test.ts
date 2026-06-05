@@ -86,7 +86,7 @@ describe('findBareTweetHits', () => {
       '`- YYYY-MM-DD | Tweeted about {topic} [Source: X, @handle, {date}]`',
       '**Problem:** Text-only collection misses visual context in tweet images --',
       '- Article URL in tweet? Fetch and ingest via article workflow',
-      '- **X/Twitter** via x-cli ([#1285](https://github.com/NousResearch/hermes-agent/pull/1285))',
+      '- **X/Twitter** via x-cli ([#1285](https://github.com/example-org/example-repo/pull/1285))',
     ].join('\n');
     expect(findBareTweetHits(s, 'p')).toEqual([]);
   });
