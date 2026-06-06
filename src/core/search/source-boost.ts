@@ -66,6 +66,11 @@ export const DEFAULT_HARD_EXCLUDES: string[] = [
   'test/',
   'attachments/',
   '.raw/',
+  // Localized Docusaurus docs duplicate English docs and often preserve the
+  // same English product/command tokens, which can make non-English pages win
+  // English queries. Keep them opt-in via include_slug_prefixes/source-specific
+  // tooling rather than letting them swamp default docs/code retrieval.
+  'website/i18n/',
 ];
 
 /**

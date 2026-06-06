@@ -232,6 +232,11 @@ describe('resolveHardExcludes', () => {
     for (const p of DEFAULT_HARD_EXCLUDES) expect(r).toContain(p);
   });
 
+  test('excludes localized Docusaurus docs by default', () => {
+    const r = resolveHardExcludes(undefined, undefined, undefined);
+    expect(r).toContain('website/i18n/');
+  });
+
   test('caller exclude_slug_prefixes adds to the union', () => {
     const r = resolveHardExcludes(['scratch/'], undefined, undefined);
     expect(r).toContain('scratch/');
