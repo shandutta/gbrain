@@ -255,6 +255,26 @@ describe("checkResolvable — real skills directory", () => {
     }
   });
 
+  test("duplicate triggers inside one skill do not count as MECE overlap", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gbrain-trigger-dedupe-"));
+    try {
+      writeFileSync(join(dir, "RESOLVER.md"), "## Test\n| Trigger | Skill |\n|-----|-----|\n| duplicate | `skills/solo/SKILL.md` |\n");
+      writeFileSync(
+        join(dir, "manifest.json"),
+        JSON.stringify({ skills: [{ name: "solo", path: "solo/SKILL.md" }] }, null, 2),
+      );
+      mkdirSync(join(dir, "solo"), { recursive: true });
+      writeFileSync(
+        join(dir, "solo", "SKILL.md"),
+        "---\nname: solo\ndescription: test\ntriggers:\n  - duplicate\n  - duplicate\n  - Duplicate\n---\n# Solo\n",
+      );
+      const fixtureReport = checkResolvable(dir);
+      expect(fixtureReport.issues.filter(i => i.type === "mece_overlap")).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("summary counts are consistent", () => {
     expect(report.summary.reachable + report.summary.unreachable).toBe(report.summary.total_skills);
   });

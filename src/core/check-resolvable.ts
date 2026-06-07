@@ -224,10 +224,18 @@ function extractTriggers(skillContent: string): string[] {
   const fm = fmMatch[1];
   const triggersMatch = fm.match(/^triggers:\s*\n((?:\s+-\s+.+\n?)*)/m);
   if (!triggersMatch) return [];
-  return triggersMatch[1]
+  const seen = new Set<string>();
+  const triggers: string[] = [];
+  for (const trigger of triggersMatch[1]
     .split('\n')
     .map(l => l.replace(/^\s+-\s+/, '').replace(/^["']|["']$/g, '').trim())
-    .filter(Boolean);
+    .filter(Boolean)) {
+    const key = trigger.toLowerCase().trim();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    triggers.push(trigger);
+  }
+  return triggers;
 }
 
 /**
