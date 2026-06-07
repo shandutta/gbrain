@@ -68,6 +68,17 @@ describe('buildChecks --scope=brain skip-computation contract', () => {
     });
   });
 
+  test('skill_conformance derives a manifest instead of warning when manifest.json is absent', async () => {
+    const skillsDir = makeSkillsTree();
+    await withEnv({ GBRAIN_SKILLS_DIR: skillsDir, GBRAIN_NO_BANNER: '1' }, async () => {
+      const checks = await buildChecks(null, ['--fast']);
+      const conformance = checks.find((c) => c.name === 'skill_conformance');
+      expect(conformance?.status).toBe('ok');
+      expect(conformance?.message).toContain('derived manifest');
+      expect(conformance?.message).not.toContain('manifest.json not found');
+    });
+  });
+
   test('--scope=brain still emits non-skill checks (the brain figure is meaningful)', async () => {
     const skillsDir = makeSkillsTree();
     await withEnv({ GBRAIN_SKILLS_DIR: skillsDir, GBRAIN_NO_BANNER: '1' }, async () => {

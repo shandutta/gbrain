@@ -421,7 +421,7 @@ export function checkResolvable(skillsDir: string): ResolvableReport {
 
     // Check if in manifest
     const skillName = relPath.replace(/\/SKILL\.md$/, '');
-    const inManifest = manifest.some(s => s.name === skillName);
+    const inManifest = manifest.some(s => s.name === skillName || s.path === relPath);
     if (!inManifest && existsSync(fullPath)) {
       issues.push({
         type: 'orphan_trigger',

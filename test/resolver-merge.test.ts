@@ -11,7 +11,7 @@
  * After: entries from both files are merged (deduped by skillPath).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { checkResolvable, parseResolverEntries } from '../src/core/check-resolvable.ts';
@@ -124,6 +124,31 @@ describe('checkResolvable merges resolver files', () => {
         `---\nname: ${name}\n---\n# ${name}\n`,
       );
     }
+  });
+
+  it('follows symlinked skill directories when reading frontmatter triggers', () => {
+    const external = mkdtempSync(join(tmpdir(), 'resolver-symlink-skill-'));
+    writeFileSync(
+      join(external, 'SKILL.md'),
+      `---\nname: external-skill\ntriggers:\n  - external trigger\n---\n# external\n`,
+    );
+    symlinkSync(external, join(skillsDir, 'external-skill'), 'dir');
+    const report = checkResolvable(skillsDir);
+    expect(report.issues.some((i) => i.skill === 'external-skill' && i.type === 'unreachable')).toBe(false);
+    rmSync(join(skillsDir, 'external-skill'), { force: true });
+    rmSync(external, { recursive: true, force: true });
+  });
+
+  it('does not flag path/name aliases as orphan triggers when manifest path matches', () => {
+    const aliasDir = join(skillsDir, 'alias-dir');
+    mkdirSync(aliasDir, { recursive: true });
+    writeFileSync(
+      join(aliasDir, 'SKILL.md'),
+      `---\nname: canonical-name\ntriggers:\n  - alias trigger\n---\n# alias\n`,
+    );
+    const report = checkResolvable(skillsDir);
+    expect(report.issues.some((i) => i.type === 'orphan_trigger' && i.skill === 'alias-dir')).toBe(false);
+    rmSync(aliasDir, { recursive: true, force: true });
   });
 
   it('with skills/RESOLVER.md (1 skill) + ../AGENTS.md (2 more) → all 3 reachable', () => {

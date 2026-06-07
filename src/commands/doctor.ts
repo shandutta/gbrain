@@ -7428,14 +7428,10 @@ function printAutoFixReport(report: AutoFixReport, dryRun: boolean, jsonOutput: 
 
 /** Quick skill conformance check — frontmatter + required sections */
 function checkSkillConformance(skillsDir: string): Check {
-  const manifestPath = join(skillsDir, 'manifest.json');
-  if (!existsSync(manifestPath)) {
-    return { name: 'skill_conformance', status: 'warn', message: 'manifest.json not found' };
-  }
-
   try {
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+    const manifest = loadOrDeriveManifest(skillsDir);
     const skills = manifest.skills || [];
+    const manifestMode = manifest.derived ? 'derived manifest' : 'manifest.json';
     let passing = 0;
     const failing: string[] = [];
 
@@ -7455,15 +7451,16 @@ function checkSkillConformance(skillsDir: string): Check {
     }
 
     if (failing.length === 0) {
-      return { name: 'skill_conformance', status: 'ok', message: `${passing}/${skills.length} skills pass` };
+      return { name: 'skill_conformance', status: 'ok', message: `${passing}/${skills.length} skills pass (${manifestMode})` };
     }
     return {
       name: 'skill_conformance',
       status: 'warn',
-      message: `${passing}/${skills.length} pass. Failing: ${failing.join(', ')}`,
+      message: `${passing}/${skills.length} pass (${manifestMode}). Failing: ${failing.join(', ')}`,
     };
-  } catch {
-    return { name: 'skill_conformance', status: 'warn', message: 'Could not parse manifest.json' };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { name: 'skill_conformance', status: 'warn', message: `Could not load skills manifest from ${skillsDir} (${msg})` };
   }
 }
 
