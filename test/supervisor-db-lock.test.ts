@@ -157,6 +157,7 @@ describe('#1849 refresh-failure fails safe (F1A)', () => {
     let refreshCalls = 0;
     const failingLock: DbLockHandle = {
       id: 'x',
+      token: 'test-token-failing',
       refresh: async () => { refreshCalls++; throw new Error('pooler down'); },
       release: async () => {},
     };
@@ -185,6 +186,7 @@ describe('#1849 refresh-failure fails safe (F1A)', () => {
     let mode: 'fail' | 'ok' = 'fail';
     const flakyLock: DbLockHandle = {
       id: 'x',
+      token: 'test-token-flaky',
       refresh: async () => { if (mode === 'fail') throw new Error('blip'); },
       release: async () => {},
     };

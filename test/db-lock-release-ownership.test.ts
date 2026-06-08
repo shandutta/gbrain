@@ -36,11 +36,11 @@ describe('tryAcquireDbLock release ownership', () => {
     const first = await tryAcquireDbLock(engine, lockId, 1);
     expect(first).not.toBeNull();
 
-    // Simulate an expired holder without waiting a minute.
+    // Simulate an expired holder beyond the steal-grace window without waiting.
     await engine.executeRaw(
       `UPDATE gbrain_cycle_locks
-          SET ttl_expires_at = NOW() - INTERVAL '1 second',
-              last_refreshed_at = NOW() - INTERVAL '1 second'
+          SET ttl_expires_at = NOW() - INTERVAL '2 minutes',
+              last_refreshed_at = NOW() - INTERVAL '2 minutes'
         WHERE id = $1`,
       [lockId],
     );
