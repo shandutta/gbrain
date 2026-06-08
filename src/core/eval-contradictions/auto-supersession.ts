@@ -30,6 +30,7 @@ import type {
   ResolutionKind,
   Verdict,
 } from './types.ts';
+import { classifyFindingActionability } from './actionability.ts';
 
 export interface ResolutionProposal {
   resolution_kind: ResolutionKind;
@@ -190,7 +191,7 @@ export function pairToFinding(
   verdict: JudgeVerdict,
 ): ContradictionFinding {
   const prop = proposeResolution(pair, verdict.resolution_kind, verdict.verdict);
-  return {
+  return classifyFindingActionability({
     ...pair,
     verdict: verdict.verdict,
     severity: verdict.severity,
@@ -198,5 +199,5 @@ export function pairToFinding(
     confidence: verdict.confidence,
     resolution_kind: prop.resolution_kind,
     resolution_command: prop.resolution_command,
-  };
+  });
 }

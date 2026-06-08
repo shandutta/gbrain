@@ -74,6 +74,18 @@ export type ResolutionKind =
 export type SourceTier = 'curated' | 'bulk' | 'other';
 
 /**
+ * Deterministic post-judge actionability classification.
+ *
+ * The LLM judge decides semantic verdict/severity. This layer decides whether
+ * a finding is allowed to affect brain health surfaces such as doctor. Example
+ * commands in imported docs are useful quality-monitor fodder, but they are not
+ * durable Shan-brain claims and must not degrade health_score.
+ */
+export type FindingActionability = 'actionable' | 'monitor_only';
+export type FindingScope = 'user_authored' | 'doc_source' | 'generated_artifact' | 'mixed' | 'other';
+export type FindingClaimType = 'semantic_claim' | 'code_example' | 'temporal_signal' | 'unknown';
+
+/**
  * Judge's verdict for a single pair. Either the judge ran cleanly and we have
  * scoring, or it failed and we have a typed error to surface in the report.
  *
@@ -152,6 +164,12 @@ export interface ContradictionFinding extends ContradictionPair {
   confidence: number;
   resolution_kind: ResolutionKind;
   resolution_command: string;
+  /** v0.42.x: whether this finding should affect doctor/page-worthy health. */
+  actionability?: FindingActionability;
+  /** v0.42.x: source-family scope used for actionability/debugging. */
+  scope?: FindingScope;
+  /** v0.42.x: coarse claim type; code examples are monitor-only. */
+  claim_type?: FindingClaimType;
 }
 
 export interface PerQueryResult {

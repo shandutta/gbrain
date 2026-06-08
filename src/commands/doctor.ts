@@ -51,6 +51,7 @@ import { isUndefinedColumnError } from '../core/utils.ts';
 // drift from what search actually filters.
 import { resolveHardExcludes, DEFAULT_HARD_EXCLUDES } from '../core/search/source-boost.ts';
 import { escapeLikePattern, buildVisibilityClause } from '../core/search/sql-ranking.ts';
+import { classifyFindingActionability } from '../core/eval-contradictions/actionability.ts';
 
 export interface Check {
   name: string;
@@ -6654,21 +6655,53 @@ export async function buildChecks(
       const report = latest.report_json as Record<string, unknown> | null;
       const perQuery = (report?.per_query as Array<{
         contradictions: Array<{
-          severity: 'low' | 'medium' | 'high';
+          severity: 'info' | 'low' | 'medium' | 'high';
+          verdict: 'no_contradiction' | 'contradiction' | 'temporal_supersession' | 'temporal_regression' | 'temporal_evolution' | 'negation_artifact';
+          actionability?: 'actionable' | 'monitor_only';
+          scope?: 'user_authored' | 'doc_source' | 'generated_artifact' | 'mixed' | 'other';
+          claim_type?: 'semantic_claim' | 'code_example' | 'temporal_signal' | 'unknown';
           axis: string;
-          a: { slug: string };
-          b: { slug: string };
+          confidence: number;
+          kind: 'cross_slug_chunks' | 'intra_page_chunk_take';
+          combined_score: number;
+          a: {
+            slug: string;
+            chunk_id: number | null;
+            take_id: number | null;
+            source_tier: 'curated' | 'bulk' | 'other';
+            holder: string | null;
+            text: string;
+            effective_date: string | null;
+            effective_date_source: string | null;
+          };
+          b: {
+            slug: string;
+            chunk_id: number | null;
+            take_id: number | null;
+            source_tier: 'curated' | 'bulk' | 'other';
+            holder: string | null;
+            text: string;
+            effective_date: string | null;
+            effective_date_source: string | null;
+          };
+          resolution_kind: 'takes_supersede' | 'dream_synthesize' | 'takes_mark_debate' | 'manual_review' | 'temporal_supersede' | 'flag_for_review' | 'log_timeline_change';
           resolution_command: string;
         }>;
       }> | undefined) ?? [];
       let high = 0, medium = 0, low = 0;
+      let monitorOnly = 0;
       const highFindings: Array<{ a: string; b: string; axis: string; cmd: string }> = [];
       for (const q of perQuery) {
         for (const c of q.contradictions) {
-          if (c.severity === 'high') {
+          const classified = classifyFindingActionability(c);
+          if (classified.actionability !== 'actionable' || classified.verdict !== 'contradiction') {
+            monitorOnly++;
+            continue;
+          }
+          if (classified.severity === 'high') {
             high++;
-            highFindings.push({ a: c.a.slug, b: c.b.slug, axis: c.axis, cmd: c.resolution_command });
-          } else if (c.severity === 'medium') medium++;
+            highFindings.push({ a: classified.a.slug, b: classified.b.slug, axis: classified.axis, cmd: classified.resolution_command });
+          } else if (classified.severity === 'medium') medium++;
           else low++;
         }
       }
@@ -6677,7 +6710,9 @@ export async function buildChecks(
         checks.push({
           name: 'contradictions',
           status: 'ok',
-          message: `Latest probe run (${latest.ran_at.slice(0, 10)}) found no suspected contradictions across ${latest.queries_evaluated} queries.`,
+          message: monitorOnly > 0
+            ? `Latest probe run (${latest.ran_at.slice(0, 10)}) found no doctor-actionable contradictions across ${latest.queries_evaluated} queries (${monitorOnly} monitor-only doc/code/temporal finding(s)).`
+            : `Latest probe run (${latest.ran_at.slice(0, 10)}) found no suspected contradictions across ${latest.queries_evaluated} queries.`,
         });
       } else {
         const ciLow = (latest.wilson_ci_lower * 100).toFixed(0);
