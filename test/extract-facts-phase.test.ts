@@ -247,6 +247,40 @@ describe('runExtractFacts — empty-fence guard (Codex R2-#7)', () => {
     expect(r.guardTriggered).toBe(false);
     expect(r.factsInserted).toBe(1);
   });
+
+  test('state-mismatch regression: guard fires + warning mentions --force-rerun when migration completed-marker exists but rows remain', async () => {
+    // Regression for the scenario where v0.32.2 is marked 'complete' in
+    // ~/.gbrain/migrations/completed.jsonl but DB still has legacy rows.
+    // `apply-migrations --yes` says "all up to date" and skips the migration,
+    // leaving the guard permanently triggered. The warning must point to the
+    // correct recovery command: `--force-rerun 0.32.2`.
+    //
+    // This test verifies the warning message guides the operator to the right
+    // command. (The ledger state is out-of-scope for this unit test; the
+    // apply-migrations.test.ts suite covers the --force-rerun flag itself.)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (engine as any).db.query(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence)
+       VALUES ('default', 'people/bob', 'stale legacy claim', 'fact', 'private', 'medium',
+               now(), 'mcp:put_page', 1.0)`,
+    );
+    await putPage('people/bob', FACT_FENCE(
+      `| 1 | current fence fact | fact | 1.0 | world | high | 2026-01-01 |  | s |  |`,
+    ));
+
+    const r = await runExtractFacts(engine, { slugs: ['people/bob'] });
+
+    expect(r.guardTriggered).toBe(true);
+    expect(r.legacyRowsPending).toBeGreaterThan(0);
+    // Warning must mention the correct force-rerun command so the operator
+    // is not stuck after `apply-migrations --yes` says "all up to date".
+    expect(r.warnings.some(w => w.includes('--force-rerun 0.32.2'))).toBe(true);
+    // Safety: the guard must NOT have reconciled any fences.
+    expect(r.factsInserted).toBe(0);
+    expect(r.factsDeleted).toBe(0);
+  });
 });
 
 describe('runExtractFacts — multi-source isolation', () => {

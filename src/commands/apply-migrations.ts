@@ -32,6 +32,15 @@ interface ApplyMigrationsArgs {
   /** Bug 3 — explicit reset for a wedged migration. Writes a 'retry' marker. */
   forceRetry?: string;
   /**
+   * Force-rerun a specific migration regardless of ledger state. Unlike
+   * --force-retry (which only works for wedged/partial migrations), this
+   * flag bypasses the "complete never regresses" rule and unconditionally
+   * re-executes the orchestrator. Use when a migration is marked complete
+   * but data postconditions are not met (e.g. legacy rows remain after
+   * v0.32.2 fence backfill).
+   */
+  forceRerun?: string;
+  /**
    * v0.30.1 namespaced --force flags (codex T5):
    *   --force-orchestrator: write 'retry' markers for ALL wedged orchestrator migrations
    *   --force-schema:       reset schema-version drift (re-run runMigrations)
@@ -66,6 +75,7 @@ function parseArgs(args: string[]): ApplyMigrationsArgs {
     hostDir: val('--host-dir'),
     noAutopilotInstall: has('--no-autopilot-install'),
     forceRetry: val('--force-retry'),
+    forceRerun: val('--force-rerun'),
     forceOrchestrator: has('--force-orchestrator'),
     forceSchema: has('--force-schema'),
     forceAll: has('--force-all') || has('--force'),
@@ -87,7 +97,15 @@ Usage:
   gbrain apply-migrations --force-retry vX.Y.Z
                                          Clear a wedged migration (3+ consecutive
                                          partials). Writes a 'retry' marker so the
-                                         next run treats it as fresh.
+                                         next run treats it as fresh. NOTE: does NOT
+                                         override a 'complete' ledger entry.
+  gbrain apply-migrations --force-rerun vX.Y.Z
+                                         Unconditionally re-run a specific migration
+                                         orchestrator regardless of ledger state (even
+                                         if already marked complete). Use when a
+                                         migration is complete in the ledger but data
+                                         postconditions are not met, e.g.:
+                                           gbrain apply-migrations --force-rerun 0.32.2
   gbrain apply-migrations --force-orchestrator
                                          Reset every wedged orchestrator migration
                                          in one shot (writes 'retry' for each).
@@ -300,6 +318,43 @@ export async function runApplyMigrations(args: string[]): Promise<void> {
     }
     appendCompletedMigration({ version: cli.forceRetry, status: 'retry' });
     console.log(`Wrote 'retry' marker for v${cli.forceRetry}. Run \`gbrain apply-migrations --yes\` to re-attempt.`);
+    return;
+  }
+
+  // --force-rerun: unconditionally re-run a specific migration orchestrator,
+  // bypassing the "complete never regresses" ledger rule. Used when the
+  // migration is marked complete but data postconditions are not satisfied
+  // (e.g. legacy rows remain after v0.32.2 fence backfill). Unlike
+  // --force-retry, this actually executes the orchestrator in-process.
+  if (cli.forceRerun) {
+    const target = migrations.find(m => m.version === cli.forceRerun);
+    if (!target) {
+      console.error(`No migration registered with version "${cli.forceRerun}". Run \`gbrain apply-migrations --list\`.`);
+      process.exit(2);
+    }
+    console.log(`\n=== Force-rerunning migration v${target.version}: ${target.featurePitch.headline} ===`);
+    try {
+      const result = await target.orchestrator(orchestratorOptsFrom(cli));
+      if (result.status === 'failed') {
+        console.error(`Migration v${target.version} reported status=failed.`);
+        try {
+          appendCompletedMigration({ version: target.version, status: 'partial', phases: result.phases });
+        } catch { /* best-effort */ }
+        process.exit(1);
+      }
+      // appendCompletedMigration no-ops when last entry is already 'complete',
+      // so writing 'complete' after 'complete' is a safe no-op. For a
+      // 'partial' result the ledger gets updated correctly.
+      try {
+        appendCompletedMigration({ version: target.version, status: result.status, phases: result.phases });
+      } catch (e) {
+        console.warn(`Warning: could not persist ledger entry: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      console.log(`Migration v${target.version} ${result.status}.`);
+    } catch (e) {
+      console.error(`Migration v${target.version} threw: ${(e as Error).message}`);
+      process.exit(1);
+    }
     return;
   }
 

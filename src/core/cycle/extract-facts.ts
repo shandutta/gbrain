@@ -126,8 +126,10 @@ export async function runExtractFacts(
     result.guardTriggered = true;
     result.warnings.push(
       `extract_facts: ${legacyCount} legacy v0.31 fact rows pending fence backfill. ` +
-      `Run \`gbrain apply-migrations --yes\` to complete v0_32_2 before this phase ` +
-      `can safely reconcile fence → DB.`,
+      `If \`gbrain apply-migrations --yes\` reports "all up to date" (migration already ` +
+      `marked complete but rows remain), run: ` +
+      `\`gbrain apply-migrations --force-rerun 0.32.2\` to re-execute the fence backfill phase. ` +
+      `Then re-trigger your cycle.`,
     );
     return result;
   }

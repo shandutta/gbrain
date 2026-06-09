@@ -52,6 +52,21 @@ describe('parseArgs', () => {
     expect(parseArgs(['--help']).help).toBe(true);
     expect(parseArgs(['-h']).help).toBe(true);
   });
+
+  test('--force-rerun parses the version argument', () => {
+    const a = parseArgs(['--force-rerun', '0.32.2']);
+    expect(a.forceRerun).toBe('0.32.2');
+  });
+
+  test('--force-retry and --force-rerun are independent flags', () => {
+    const a = parseArgs(['--force-retry', '0.32.2']);
+    expect(a.forceRetry).toBe('0.32.2');
+    expect(a.forceRerun).toBeUndefined();
+
+    const b = parseArgs(['--force-rerun', '0.32.2']);
+    expect(b.forceRerun).toBe('0.32.2');
+    expect(b.forceRetry).toBeUndefined();
+  });
 });
 
 describe('indexCompleted + statusForVersion', () => {
@@ -92,6 +107,37 @@ describe('indexCompleted + statusForVersion', () => {
     const idx = indexCompleted(entries);
     expect(statusForVersion('0.11.0', idx)).toBe('pending');
     expect(statusForVersion('0.10.0', idx)).toBe('complete');
+  });
+
+  test('state-mismatch regression: complete+retry → still complete ("complete never regresses")', () => {
+    // Documents why `apply-migrations --force-retry 0.32.2` does NOT
+    // re-queue a completed migration. The "complete never regresses" rule
+    // means a later retry marker is ignored. The correct recovery path for
+    // a completed-but-postcondition-failing migration is
+    // `apply-migrations --force-rerun 0.32.2`.
+    const entries: CompletedMigrationEntry[] = [
+      { version: '0.32.2', status: 'complete' },
+      { version: '0.32.2', status: 'retry' },   // written by --force-retry
+    ];
+    const idx = indexCompleted(entries);
+    // 'complete' wins — retry after complete is a no-op for plan-building.
+    expect(statusForVersion('0.32.2', idx)).toBe('complete');
+  });
+
+  test('state-mismatch regression: complete migration stays in plan.applied, NOT plan.pending', () => {
+    // Verifies that buildPlan correctly routes a completed migration to
+    // plan.applied even when a retry marker follows the complete entry.
+    // A completed migration cannot be re-queued via the normal --yes path;
+    // --force-rerun bypasses ledger state entirely.
+    const entries: CompletedMigrationEntry[] = [
+      { version: '0.32.2', status: 'complete' },
+      { version: '0.32.2', status: 'retry' },
+    ];
+    const idx = indexCompleted(entries);
+    const plan = buildPlan(idx, '99.99.99.0');  // high version so nothing is skippedFuture
+    expect(plan.applied.map(m => m.version)).toContain('0.32.2');
+    expect(plan.pending.map(m => m.version)).not.toContain('0.32.2');
+    expect(plan.partial.map(m => m.version)).not.toContain('0.32.2');
   });
 });
 
