@@ -9,8 +9,11 @@
  * Anthropic call:
  *   - disabled: dream.patterns.enabled=false → skipped
  *   - insufficient_evidence: <min_evidence reflections → skipped
- *   - no_api_key: enough reflections, no ANTHROPIC_API_KEY → skipped
  *   - dry-run: passes through with reflections_considered + zero pages
+ *
+ * Regression guard (removed no_api_key gate):
+ *   - enough reflections + no ANTHROPIC_API_KEY → phase must NOT skip with
+ *     reason 'no_api_key'; it proceeds to subagent submission instead.
  *
  * The Sonnet detection path is structurally covered in
  * test/cycle-patterns.test.ts (asserts queue + waitForCompletion are
@@ -20,9 +23,10 @@
  * Run: bun test test/e2e/dream-patterns-pglite.test.ts
  */
 
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, spyOn } from 'bun:test';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import { runPhasePatterns } from '../../src/core/cycle/patterns.ts';
+import { MinionQueue } from '../../src/core/minions/queue.ts';
 
 interface TestRig {
   engine: PGLiteEngine;
@@ -141,19 +145,40 @@ describe('E2E patterns — insufficient_evidence', () => {
   }, 30_000);
 });
 
-describe('E2E patterns — no API key', () => {
-  test('enough reflections, no ANTHROPIC_API_KEY → skipped no_api_key', async () => {
+describe('E2E patterns — no API key gate removed (regression)', () => {
+  test('enough reflections + no ANTHROPIC_API_KEY → does NOT skip with no_api_key', async () => {
+    // Regression guard: the hard ANTHROPIC_API_KEY env-var gate was removed
+    // so that non-Anthropic providers (DeepSeek, etc.) work. With enough
+    // reflections and the phase enabled, the code must reach the subagent
+    // submission step rather than returning an early skip.
+    //
+    // We spy on MinionQueue.prototype.add to intercept the submission and
+    // throw a sentinel so the test completes quickly without a real worker.
     const rig = await setupRig();
     try {
       await seedReflections(rig.engine, 5); // above default min_evidence (3)
+
+      const sentinel = new Error('__sentinel_queue_add_intercepted__');
+      const addSpy = spyOn(MinionQueue.prototype, 'add').mockRejectedValue(sentinel);
+
       await withoutAnthropicKey(async () => {
         const result = await runPhasePatterns(rig.engine, {
           brainDir: rig.brainDir,
           dryRun: false,
         });
-        expect(result.status).toBe('skipped');
-        expect((result.details as { reason?: string }).reason).toBe('no_api_key');
+        // Must NOT be the removed skip reason.
+        expect((result.details as { reason?: string }).reason).not.toBe('no_api_key');
+        // The sentinel from queue.add propagates as a patterns_phase_fail,
+        // proving the code reached the submission step.
+        if (result.status === 'fail') {
+          expect(result.error?.code).toBe('PATTERNS_PHASE_FAIL');
+          expect(result.error?.message).toContain('__sentinel_queue_add_intercepted__');
+        }
+        // The spy must have been called (confirmed phase reached submission).
+        expect(addSpy).toHaveBeenCalled();
       });
+
+      addSpy.mockRestore();
     } finally {
       await rig.cleanup();
     }

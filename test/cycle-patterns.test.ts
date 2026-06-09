@@ -39,9 +39,11 @@ describe('patterns phase wiring', () => {
     expect(patternsSrc).toContain("tool_name = 'brain_put_page'");
   });
 
-  test('skips when ANTHROPIC_API_KEY missing', () => {
-    expect(patternsSrc).toContain('ANTHROPIC_API_KEY');
-    expect(patternsSrc).toContain('no_api_key');
+  test('does NOT gate on ANTHROPIC_API_KEY (model-agnostic, supports DeepSeek/etc.)', () => {
+    // The hard env-var gate was removed so non-Anthropic providers work.
+    // Model is resolved via models.dream.patterns / resolveModel instead.
+    expect(patternsSrc).not.toContain("process.env.ANTHROPIC_API_KEY");
+    expect(patternsSrc).not.toContain('no_api_key');
   });
 
   test('skips when reflections below min_evidence', () => {

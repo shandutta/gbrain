@@ -64,10 +64,9 @@ export async function runPhasePatterns(
     }
 
     // Submit one subagent for pattern detection.
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return skipped('no_api_key', 'ANTHROPIC_API_KEY unset; pattern detection skipped');
-    }
-
+    // Model is resolved via models.dream.patterns / resolveModel; no hard
+    // ANTHROPIC_API_KEY gate here — other providers (DeepSeek, etc.) are
+    // equally valid.
     const allowedSlugPrefixes = await loadAllowedSlugPrefixes();
     if (allowedSlugPrefixes.length === 0) {
       return failed(makeError('InternalError', 'NO_ALLOWLIST',
