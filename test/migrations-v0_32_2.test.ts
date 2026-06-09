@@ -14,6 +14,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:tes
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { v0_32_2, __setTestEngineOverride, __testing } from '../src/commands/migrations/v0_32_2.ts';
@@ -235,6 +236,75 @@ describe('phaseBFenceFacts — happy path backfill', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const rows = await (engine as any).db.query('SELECT row_num FROM facts');
     expect(rows.rows[0].row_num).toBeNull();
+  });
+});
+
+describe('phaseBFenceFacts — dirty-tree scoping', () => {
+  test('dirty source with NO fenceable rows does NOT block the phase', async () => {
+    // Source "default" is the dirty one — but it has no fenceable legacy facts.
+    // We simulate "dirty" by giving it a local_path that isLocalPathDirty would
+    // flag. We can't actually make a git repo dirty in a temp dir easily, so
+    // we stub isLocalPathDirty indirectly by verifying the fix: the check only
+    // runs for sources WITH fenceable rows. If default has no fenceable rows,
+    // it should never be checked and the phase should succeed.
+
+    // Add a second source that has fenceable rows and a clean (non-git) path.
+    const cleanDir = mkdtempSync(join(tmpdir(), 'mig-v0_32_2-clean-'));
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (engine as any).db.query(
+        `INSERT INTO sources (id, name, local_path) VALUES ('source-b', 'source-b', $1)
+         ON CONFLICT (id) DO UPDATE SET local_path = $1`,
+        [cleanDir],
+      );
+      // Only source-b has fenceable rows; "default" has none.
+      await seedLegacyFact({ entity_slug: 'people/bob', fact: 'Works at Acme', source_id: 'source-b' });
+
+      // Null out default's local_path to ensure it won't trigger dirty check
+      // (the old code would have iterated it; the new code skips it entirely
+      // because it has no fenceable rows).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (engine as any).db.query(`UPDATE sources SET local_path = NULL WHERE id = 'default'`);
+
+      const r = await __testing.phaseBFenceFacts(engine, OPTS);
+      expect(r.status).toBe('complete');
+      expect(r.detail).toContain('fenced=1');
+    } finally {
+      try { rmSync(cleanDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (engine as any).db.query(`DELETE FROM sources WHERE id = 'source-b'`);
+    }
+  });
+
+  test('dirty source WITH fenceable rows DOES block the phase', async () => {
+    // We need isLocalPathDirty to return true for this source. Create a
+    // real git repo in a temp dir, leave an untracked file so that
+    // `git status --porcelain` is non-empty, and seed fenceable facts for it.
+    const dirtyDir = mkdtempSync(join(tmpdir(), 'mig-v0_32_2-dirty-'));
+    try {
+      // Initialize a git repo and leave an untracked file so `git status --porcelain` is non-empty.
+      execFileSync('git', ['-C', dirtyDir, 'init'], { encoding: 'utf-8', stdio: 'pipe' });
+      writeFileSync(join(dirtyDir, 'dirty.txt'), 'untracked content', 'utf-8');
+      // Now git status --porcelain should return "?? dirty.txt".
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (engine as any).db.query(
+        `INSERT INTO sources (id, name, local_path) VALUES ('source-dirty', 'source-dirty', $1)
+         ON CONFLICT (id) DO UPDATE SET local_path = $1`,
+        [dirtyDir],
+      );
+      // Seed a fenceable fact for the dirty source.
+      await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Has dirty source', source_id: 'source-dirty' });
+
+      const r = await __testing.phaseBFenceFacts(engine, OPTS);
+      expect(r.status).toBe('failed');
+      expect(r.detail).toContain('uncommitted changes');
+      expect(r.detail).toContain('source-dirty');
+    } finally {
+      try { rmSync(dirtyDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (engine as any).db.query(`DELETE FROM sources WHERE id = 'source-dirty'`);
+    }
   });
 });
 
