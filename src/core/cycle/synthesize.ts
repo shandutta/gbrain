@@ -483,6 +483,7 @@ export async function runPhaseSynthesize(
           max_stalled: 3,
           on_child_fail: 'continue',
           idempotency_key,
+          retry_terminal_failure: true,
           timeout_ms: 30 * 60 * 1000, // 30 min per chunk
         };
         const child = await queue.add(

@@ -133,12 +133,30 @@ export class MinionQueue {
       // 1. Idempotency fast path — if a row already exists for this key, return it
       //    without doing any other work. The unique partial index guarantees
       //    no second row can be inserted with the same non-null key.
+      //
+      // Durable batch jobs can need to retry the same input hash after a
+      // transient provider/schema bug. `retry_terminal_failure` keeps completed
+      // rows deduped but lets callers replace stale failed/dead/cancelled rows
+      // rather than poisoning all future submissions for that idempotency key.
       if (opts?.idempotency_key) {
         const existing = await tx.executeRaw<Record<string, unknown>>(
           `SELECT * FROM minion_jobs WHERE idempotency_key = $1`,
           [opts.idempotency_key]
         );
-        if (existing.length > 0) return rowToMinionJob(existing[0]);
+        if (existing.length > 0) {
+          const existingJob = rowToMinionJob(existing[0]);
+          if (
+            opts.retry_terminal_failure === true &&
+            (existingJob.status === 'failed' || existingJob.status === 'dead' || existingJob.status === 'cancelled')
+          ) {
+            await tx.executeRaw(
+              `DELETE FROM minion_jobs WHERE id = $1 AND status IN ('failed','dead','cancelled')`,
+              [existingJob.id],
+            );
+          } else {
+            return existingJob;
+          }
+        }
       }
 
       // 1b. Submission-time backpressure for high-frequency named jobs.
