@@ -5307,6 +5307,29 @@ export const MIGRATIONS: Migration[] = [
       `,
     },
   },
+  {
+    version: 118,
+    name: 'minion_autopilot_cycle_source_backpressure_index',
+    // Supports the per-source fanout backpressure guard. Without this partial
+    // expression index, every autopilot tick can scan a large minion_jobs table
+    // to ask whether a source already has waiting/active cycle work.
+    idempotent: true,
+    transaction: false,
+    sql: `
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_minion_jobs_autopilot_source_backpressure
+        ON minion_jobs (name, status, ((data->>'source_id')))
+        WHERE name = 'autopilot-cycle'
+          AND status IN ('waiting', 'active');
+    `,
+    sqlFor: {
+      pglite: `
+        CREATE INDEX IF NOT EXISTS idx_minion_jobs_autopilot_source_backpressure
+          ON minion_jobs (name, status, ((data->>'source_id')))
+          WHERE name = 'autopilot-cycle'
+            AND status IN ('waiting', 'active');
+      `,
+    },
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0
