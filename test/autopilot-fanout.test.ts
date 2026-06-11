@@ -186,14 +186,29 @@ describe('resolveFanoutMax', () => {
 describe('dispatchPerSource — integration with stubbed engine + queue', () => {
   type AddedJob = { name: string; data: unknown; opts: Record<string, unknown> };
 
-  function makeStubs(sources: SourceRow[], opts?: { listThrows?: boolean }) {
+  function makeStubs(sources: SourceRow[], opts?: {
+    listThrows?: boolean;
+    /** Source IDs that already have a waiting/active autopilot-cycle job (backpressure sim). */
+    activeSourceIds?: string[];
+    /** When true, executeRaw throws (simulates DB error). */
+    executeRawThrows?: boolean;
+  }) {
     const added: AddedJob[] = [];
     let nextId = 100;
+    const activeSet = new Set(opts?.activeSourceIds ?? []);
     const engine = {
       kind: 'postgres' as const,
       listAllSources: async () => {
         if (opts?.listThrows) throw new Error('sources table missing');
         return sources;
+      },
+      executeRaw: async <T = Record<string, unknown>>(_sql: string, params?: unknown[]): Promise<T[]> => {
+        if (opts?.executeRawThrows) throw new Error('DB connection failed');
+        // Simulate backpressure check: return rows for source IDs in activeSet that
+        // overlap with the queried set (params[0] is the array passed to ANY($1::text[])).
+        const queriedIds = (params?.[0] as string[] | undefined) ?? [];
+        const blocked = queriedIds.filter(id => activeSet.has(id));
+        return blocked.map(id => ({ source_id: id })) as unknown as T[];
       },
     } as unknown as BrainEngine;
     const queue = {
@@ -279,6 +294,7 @@ describe('dispatchPerSource — integration with stubbed engine + queue', () => 
     const engine = {
       kind: 'postgres' as const,
       listAllSources: async () => sources,
+      executeRaw: async () => [],  // no backpressure
     } as unknown as BrainEngine;
     const queue = {
       add: async (name: string, data: unknown, opts: Record<string, unknown>) => {
@@ -334,5 +350,74 @@ describe('dispatchPerSource — integration with stubbed engine + queue', () => 
     expect(result.dispatched.length).toBe(0);
     expect(result.skipped_fresh.length).toBe(2);
     expect(added.length).toBe(0);
+  });
+
+  describe('per-source backpressure guard', () => {
+    test('waiting job for source A suppresses A, B still dispatched', async () => {
+      const { engine, queue, added, fanoutOpts, events } = makeStubs(
+        [src('alpha'), src('beta')],
+        { activeSourceIds: ['alpha'] },
+      );
+      const result = await dispatchPerSource(engine, queue, fanoutOpts);
+      expect(result.dispatched).toEqual(['beta']);
+      expect(result.skipped_backpressure).toEqual(['alpha']);
+      expect(added.length).toBe(1);
+      expect((added[0].data as Record<string, unknown>).source_id).toBe('beta');
+      const bpEvent = events.find(e => JSON.parse(e).event === 'fanout_source_backpressure');
+      expect(bpEvent).toBeDefined();
+      expect(JSON.parse(bpEvent!).source_id).toBe('alpha');
+    });
+
+    test('active job for source A suppresses A, B still dispatched', async () => {
+      const { engine, queue, added, fanoutOpts } = makeStubs(
+        [src('alpha'), src('beta')],
+        { activeSourceIds: ['alpha'] },
+      );
+      const result = await dispatchPerSource(engine, queue, fanoutOpts);
+      expect(result.dispatched).toEqual(['beta']);
+      expect(result.skipped_backpressure).toEqual(['alpha']);
+      expect(added.length).toBe(1);
+    });
+
+    test('terminal (dead/completed) jobs do NOT suppress dispatch', async () => {
+      // activeSourceIds is empty — only waiting/active rows are returned by the backpressure query
+      const { engine, queue, added, fanoutOpts } = makeStubs(
+        [src('alpha'), src('beta')],
+        { activeSourceIds: [] },
+      );
+      const result = await dispatchPerSource(engine, queue, fanoutOpts);
+      expect(result.dispatched.sort()).toEqual(['alpha', 'beta']);
+      expect(result.skipped_backpressure).toEqual([]);
+      expect(added.length).toBe(2);
+    });
+
+    test('executeRaw failure is fail-closed: all sources suppressed (prevents queue pileup)', async () => {
+      const { engine, queue, added, fanoutOpts, events } = makeStubs(
+        [src('alpha'), src('beta')],
+        { executeRawThrows: true },
+      );
+      const result = await dispatchPerSource(engine, queue, fanoutOpts);
+      expect(result.dispatched.length).toBe(0);
+      expect(result.skipped_backpressure.sort()).toEqual(['alpha', 'beta']);
+      expect(added.length).toBe(0);
+      const failEvent = events.find(e => {
+        try { return JSON.parse(e).event === 'fanout_backpressure_query_failed'; } catch { return false; }
+      });
+      expect(failEvent).toBeDefined();
+    });
+
+    test('skipped_backpressure is empty array when no backpressure', async () => {
+      const { engine, queue, fanoutOpts } = makeStubs([src('alpha')]);
+      const result = await dispatchPerSource(engine, queue, fanoutOpts);
+      expect(result.skipped_backpressure).toEqual([]);
+    });
+
+    test('backpressure does not suppress legacy fallback path', async () => {
+      // Legacy path (empty sources) uses maxWaiting:1 and doesn't hit executeRaw
+      const { engine, queue, added, fanoutOpts } = makeStubs([], { executeRawThrows: true });
+      const result = await dispatchPerSource(engine, queue, fanoutOpts);
+      expect(result.legacy_fallback).toBe(true);
+      expect(added.length).toBe(1);
+    });
   });
 });

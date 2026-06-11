@@ -91,6 +91,11 @@ export interface FanoutResult {
   skipped_fresh: string[];
   /** Source ids beyond the fanoutMax cap (will retry next tick). */
   skipped_cap: string[];
+  /**
+   * Source ids suppressed because they already have a waiting/active
+   * autopilot-cycle job — per-source backpressure guard.
+   */
+  skipped_backpressure: string[];
   /** True when this tick fell back to the legacy single-job path
    *  (no sources rows / engine empty). */
   legacy_fallback: boolean;
@@ -178,6 +183,38 @@ export function selectSourcesForDispatch(
 }
 
 /**
+ * Query which of the given source IDs already have a waiting or active
+ * autopilot-cycle job. Returns a set of blocked source IDs.
+ *
+ * Fail-closed policy: if the query throws (transient DB error, schema not
+ * ready), we treat ALL queried sources as blocked. This prevents the
+ * queue-pileup failure mode (218 waiting + 113 dead jobs) from worsening
+ * during degraded connectivity. The next tick will retry cleanly.
+ */
+async function getBackpressuredSources(
+  engine: BrainEngine,
+  sourceIds: string[],
+): Promise<{ blocked: Set<string>; queryFailed: boolean }> {
+  if (sourceIds.length === 0) return { blocked: new Set(), queryFailed: false };
+  try {
+    const rows = await engine.executeRaw<{ source_id: string }>(
+      `SELECT DISTINCT (data->>'source_id') AS source_id
+       FROM minion_jobs
+       WHERE name = 'autopilot-cycle'
+         AND status IN ('waiting', 'active')
+         AND (data->>'source_id') = ANY($1::text[])`,
+      [sourceIds],
+    );
+    return {
+      blocked: new Set(rows.map(r => r.source_id).filter(Boolean)),
+      queryFailed: false,
+    };
+  } catch {
+    return { blocked: new Set(sourceIds), queryFailed: true };
+  }
+}
+
+/**
  * Per-tick autopilot fan-out. Replaces the v0.36+ single autopilot-cycle
  * dispatch when `shouldFullCycle` is true.
  *
@@ -226,13 +263,29 @@ export async function dispatchPerSource(
     } else {
       log(`[dispatch] job #${job.id} autopilot-cycle (legacy single-source)`);
     }
-    return { dispatched: [], skipped_fresh: [], skipped_cap: [], legacy_fallback: true };
+    return { dispatched: [], skipped_fresh: [], skipped_cap: [], skipped_backpressure: [], legacy_fallback: true };
   }
 
   const { dispatch, skippedFresh, skippedCap } = selectSourcesForDispatch(sources, opts.fanoutMax);
 
+  const dispatchIds = dispatch.map(s => s.id);
+  const { blocked, queryFailed } = await getBackpressuredSources(engine, dispatchIds);
+  if (queryFailed && opts.jsonMode) {
+    emit(JSON.stringify({ event: 'fanout_backpressure_query_failed', suppressed: dispatchIds }));
+  }
+
   const dispatched: string[] = [];
+  const skippedBackpressure: string[] = [];
   for (const src of dispatch) {
+    if (blocked.has(src.id)) {
+      skippedBackpressure.push(src.id);
+      if (opts.jsonMode) {
+        emit(JSON.stringify({ event: 'fanout_source_backpressure', source_id: src.id }));
+      } else {
+        log(`[dispatch] SKIP source=${src.id}: existing waiting/active autopilot-cycle job`);
+      }
+      continue;
+    }
     try {
       const remoteUrl = typeof src.config?.remote_url === 'string' ? src.config.remote_url : null;
       const job = await queue.add(
@@ -298,6 +351,7 @@ export async function dispatchPerSource(
     dispatched,
     skipped_fresh: skippedFresh.map(s => s.id),
     skipped_cap: skippedCap.map(s => s.id),
+    skipped_backpressure: skippedBackpressure,
     legacy_fallback: false,
   };
 }
