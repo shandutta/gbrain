@@ -497,18 +497,18 @@ export const MIGRATIONS: Migration[] = [
     sql: '',
     handler: async (engine) => {
       if (engine.kind === 'postgres') {
-        await engine.runMigration(
-          14,
-          `DO $$ BEGIN
-             IF EXISTS (
-               SELECT 1 FROM pg_index i
-               JOIN pg_class c ON c.oid = i.indexrelid
-               WHERE c.relname = 'idx_pages_updated_at_desc' AND NOT i.indisvalid
-             ) THEN
-               EXECUTE 'DROP INDEX IF EXISTS idx_pages_updated_at_desc';
-             END IF;
-           END $$;`
+        const invalid = await engine.executeRaw(
+          `SELECT 1 FROM pg_index i
+             JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = 'idx_pages_updated_at_desc' AND NOT i.indisvalid
+            LIMIT 1`
         );
+        if ((invalid as unknown[]).length > 0) {
+          await engine.runMigration(
+            14,
+            `DROP INDEX CONCURRENTLY IF EXISTS idx_pages_updated_at_desc`
+          );
+        }
         await engine.runMigration(
           14,
           `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pages_updated_at_desc
@@ -3263,18 +3263,18 @@ export const MIGRATIONS: Migration[] = [
     sql: '',
     handler: async (engine) => {
       if (engine.kind === 'postgres') {
-        await engine.runMigration(
-          66,
-          `DO $$ BEGIN
-             IF EXISTS (
-               SELECT 1 FROM pg_index i
-               JOIN pg_class c ON c.oid = i.indexrelid
-               WHERE c.relname = 'idx_chunks_embedding_null' AND NOT i.indisvalid
-             ) THEN
-               EXECUTE 'DROP INDEX IF EXISTS idx_chunks_embedding_null';
-             END IF;
-           END $$;`
+        const invalid = await engine.executeRaw(
+          `SELECT 1 FROM pg_index i
+             JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = 'idx_chunks_embedding_null' AND NOT i.indisvalid
+            LIMIT 1`
         );
+        if ((invalid as unknown[]).length > 0) {
+          await engine.runMigration(
+            66,
+            `DROP INDEX CONCURRENTLY IF EXISTS idx_chunks_embedding_null`
+          );
+        }
         await engine.runMigration(
           66,
           `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_embedding_null

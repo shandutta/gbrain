@@ -6382,12 +6382,15 @@ export async function buildChecks(
       // quarantined (hidden) junk page emits `quarantine`; `hard_block` is now
       // only the pre-v0.42 legacy alias. `flag` is a warn disposition (still
       // searchable, agent warned on retrieval), so it joins `soft_block`.
+      const hasHardBlocked =
+        summary.by_type.hard_block > 0 || summary.by_type.reject > 0 || summary.by_type.quarantine > 0;
+      const hasSoftBlocked = summary.by_type.soft_block > 0 || summary.by_type.flag > 0;
       const hardBlocked =
         summary.by_type.hard_block + summary.by_type.reject + summary.by_type.quarantine;
       const softBlocked = summary.by_type.soft_block + summary.by_type.flag;
       const hasPatternHits = summary.top_patterns.length > 0;
       const status: 'ok' | 'warn' | 'fail' =
-        hardBlocked > 0 ? 'fail' : (softBlocked > 0 || hasPatternHits) ? 'warn' : 'ok';
+        hasHardBlocked ? 'fail' : (hasSoftBlocked || hasPatternHits) ? 'warn' : 'ok';
       const prefix = status === 'ok' && summary.by_type.warn > 0
         ? `${events.length} warn-only events`
         : `${events.length} events`;
