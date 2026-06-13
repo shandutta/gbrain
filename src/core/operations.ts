@@ -425,6 +425,52 @@ export function sourceScopeOpts(ctx: OperationContext): { sourceId?: string; sou
   return {};
 }
 
+async function localCrossSourcePageMissHint(
+  ctx: OperationContext,
+  slug: string,
+  includeDeleted: boolean,
+): Promise<{ message: string; suggestion: string } | null> {
+  // Local CLI only: cross-source existence is useful UX for the human who owns
+  // the machine. Remote/MCP callers must not learn about out-of-scope sources.
+  if (ctx.remote !== false) return null;
+  const active = ctx.sourceId;
+  if (!active) return null;
+  try {
+    const rows = await ctx.engine.executeRaw<{ source_id: string; local_path: string | null }>(
+      `SELECT p.source_id, s.local_path
+         FROM pages p
+         LEFT JOIN sources s ON s.id = p.source_id
+        WHERE p.slug = $1
+          AND p.source_id <> $2
+          AND ($3::boolean OR p.deleted_at IS NULL)
+        ORDER BY p.source_id`,
+      [slug, active, includeDeleted],
+    );
+    if (rows.length === 0) return null;
+    const sourceIds = Array.from(new Set(rows.map(r => r.source_id))).sort();
+    const first = sourceIds[0];
+    const activeRows = await ctx.engine.executeRaw<{ local_path: string | null }>(
+      `SELECT local_path FROM sources WHERE id = $1`,
+      [active],
+    );
+    const activePath = activeRows[0]?.local_path ? ` (${activeRows[0].local_path})` : '';
+    const foundPaths = rows
+      .filter(r => r.local_path)
+      .map(r => `  - ${r.source_id}: ${r.local_path}`)
+      .join('\n');
+    const pathHint = foundPaths ? `\nMatching source paths:\n${foundPaths}` : '';
+    return {
+      message: `Page not found in active source "${active}"${activePath}: ${slug}`,
+      suggestion:
+        `slug exists in source(s): ${sourceIds.join(', ')}.${pathHint}\n` +
+        `Try: GBRAIN_SOURCE=${first} gbrain get ${slug}\n` +
+        `For deliberate cross-source lookup: GBRAIN_SOURCE=__all__ gbrain get ${slug}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolve a per-call requested source scope against the caller's trust + grant.
  * FAIL-CLOSED: anything not strictly `ctx.remote === false` is untrusted.
@@ -632,6 +678,10 @@ const get_page: Operation = {
     }
 
     if (!page) {
+      const crossSourceHint = await localCrossSourcePageMissHint(ctx, slug, includeDeleted);
+      if (crossSourceHint) {
+        throw new OperationError('page_not_found', crossSourceHint.message, crossSourceHint.suggestion);
+      }
       throw new OperationError('page_not_found', `Page not found: ${slug}`, includeDeleted ? 'Check the slug or use fuzzy: true' : 'Page may be soft-deleted; pass include_deleted: true to verify');
     }
 
