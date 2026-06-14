@@ -22,7 +22,7 @@ async function resetBrain(): Promise<void> {
 async function seedEntity(slug: string, withTimeline = false): Promise<void> {
   await engine.putPage(slug, {
     type: 'person',
-    title: slug.split('/').pop(),
+    title: slug.split('/').pop() ?? slug,
     compiled_truth: 'Profile page.',
   });
   if (withTimeline) {
