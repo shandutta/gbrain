@@ -247,6 +247,24 @@ describe('findRepoRoot', () => {
     expect(readOnly.source).toBe('openclaw_workspace_env');
   });
 
+  it('v0.31.7 D3-5b: read-only fallback finds bundled skills from compiled executable path', () => {
+    // Bun compiled binaries can report import.meta.url from an in-memory
+    // /$bunfs path, so the module-url fallback alone cannot see the adjacent
+    // checked-out skills/. The executable path (`<repo>/bin/gbrain`) still
+    // anchors the install tree. This pins the off-cwd `bin/gbrain doctor`
+    // warning where resolver_health said "Could not find skills directory".
+    const cwd = scratch();
+    const root = scratch();
+    seedRepo(root);
+    const fakeExecutable = join(root, 'bin', 'gbrain');
+    mkdirSync(join(root, 'bin'), { recursive: true });
+    writeFileSync(fakeExecutable, 'fake binary');
+
+    const found = autoDetectSkillsDirReadOnly(cwd, {}, ['file:///$bunfs/root/gbrain/src/core/repo-root.ts', fakeExecutable]);
+    expect(found.dir).toBe(join(root, 'skills'));
+    expect(found.source).toBe('install_path');
+  });
+
   it('v0.31.7 D3-6: AUTO_DETECT_HINT documents tier-0 GBRAIN_SKILLS_DIR', () => {
     // Hint string is what users see when auto-detect fails — must list the
     // tier-0 explicit override so they know to set it.

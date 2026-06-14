@@ -240,6 +240,7 @@ function isGbrainSourceRoot(dir: string): boolean {
 export function resolveWhoknowsFixturePath(
   env: NodeJS.ProcessEnv = process.env,
   moduleUrl: string = import.meta.url,
+  installPathCandidates?: string[],
 ): string | null {
   if (env.GBRAIN_WHOKNOWS_FIXTURE_PATH) {
     return isAbsolute(env.GBRAIN_WHOKNOWS_FIXTURE_PATH)
@@ -259,18 +260,23 @@ export function resolveWhoknowsFixturePath(
   };
 
   // Source-mode runs resolve from import.meta.url. Compiled single-binary runs
-  // may not retain a source-like module URL, so also try cwd. This keeps
-  // `cd /path/to/gbrain && ./bin/gbrain doctor` healthy without requiring an
-  // environment override.
+  // may not retain a source-like module URL, so also try cwd and executable
+  // install-path candidates. This keeps both `cd /path/to/gbrain && ./bin/gbrain
+  // doctor` and `cd ~ && /path/to/gbrain/bin/gbrain doctor` healthy without
+  // requiring an environment override.
   const cwdResolved = searchFrom(process.cwd());
   if (cwdResolved) return cwdResolved;
 
-  try {
-    const moduleResolved = searchFrom(dirname(fileURLToPath(moduleUrl)));
-    if (moduleResolved) return moduleResolved;
-  } catch {
-    // Some bundlers/runtimes may not expose a normal file: import URL.
-    // Doctor should surface an override hint instead of fabricating a path.
+  const candidates = [moduleUrl, ...(installPathCandidates ?? [process.execPath])];
+  for (const candidate of candidates) {
+    try {
+      const start = candidate.startsWith('file:') ? dirname(fileURLToPath(candidate)) : candidate;
+      const resolved = searchFrom(start);
+      if (resolved) return resolved;
+    } catch {
+      // Some bundlers/runtimes may not expose a normal file: import URL.
+      // Try the next candidate before surfacing an override hint.
+    }
   }
 
   return null;

@@ -225,24 +225,32 @@ function isGbrainRepoRoot(dir: string): boolean {
 export function autoDetectSkillsDirReadOnly(
   startDir: string = process.cwd(),
   env: NodeJS.ProcessEnv = process.env,
+  installPathCandidates?: string[],
 ): SkillsDirDetection {
   const primary = autoDetectSkillsDir(startDir, env);
   if (primary.dir) return primary;
 
-  // Tier-5 install-path fallback: walk up from this module's install
-  // location. Gate with isGbrainRepoRoot so we don't false-positive when
-  // the install path lives inside an unrelated repo (e.g., a monorepo
-  // that vendored gbrain in a subdir).
-  try {
-    const moduleDir = fileURLToPath(import.meta.url);
-    const installRoot = findRepoRoot(moduleDir);
-    if (installRoot && isGbrainRepoRoot(installRoot)) {
-      return { dir: join(installRoot, 'skills'), source: 'install_path' };
+  // Tier-5 install-path fallback: walk up from the installed module path
+  // AND the executable path. In source-mode `import.meta.url` points back
+  // at `src/core/repo-root.ts`; in Bun's compiled single-file binary it can
+  // point into an in-memory /$bunfs path that has no adjacent `skills/`.
+  // The compiled executable path (`process.execPath`) still sits under the
+  // install tree (for example `<repo>/bin/gbrain`), so check both. Gate every
+  // candidate with isGbrainRepoRoot so we don't false-positive when the path
+  // lives inside an unrelated repo (e.g., a monorepo that vendored gbrain in
+  // a subdir).
+  const candidates = installPathCandidates ?? [import.meta.url, process.execPath];
+  for (const candidate of candidates) {
+    try {
+      const start = candidate.startsWith('file:') ? fileURLToPath(candidate) : candidate;
+      const installRoot = findRepoRoot(start);
+      if (installRoot && isGbrainRepoRoot(installRoot)) {
+        return { dir: join(installRoot, 'skills'), source: 'install_path' };
+      }
+    } catch {
+      // fileURLToPath can throw on malformed import.meta.url (rare; some
+      // bundlers/runtimes). Try the next candidate before giving up.
     }
-  } catch {
-    // fileURLToPath can throw on malformed import.meta.url (rare; some
-    // bundlers/runtimes). Fall through to the null detection — better to
-    // refuse the fallback than to fabricate a path.
   }
 
   return primary; // null detection, source: null

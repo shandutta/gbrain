@@ -160,6 +160,32 @@ describe('whoknows_health doctor check', () => {
     }
   });
 
+  it('resolves from compiled executable path when cwd and module URL are not source-like', () => {
+    try {
+      const root = mkdtempSync(join(tmpdir(), 'whoknows-compiled-root-'));
+      const fixturePath = join(root, 'test/fixtures/whoknows-eval.jsonl');
+      mkdirSync(join(root, 'src'), { recursive: true });
+      mkdirSync(join(root, 'skills'), { recursive: true });
+      mkdirSync(join(root, 'test/fixtures'), { recursive: true });
+      mkdirSync(join(root, 'bin'), { recursive: true });
+      writeFileSync(join(root, 'src', 'cli.ts'), '// marker');
+      writeFileSync(join(root, 'skills', 'RESOLVER.md'), '# resolver');
+      writeFileSync(fixturePath, '{}\n{}\n{}\n{}\n{}\n');
+      const executable = join(root, 'bin', 'gbrain');
+      writeFileSync(executable, 'fake binary');
+
+      const resolved = resolveWhoknowsFixturePath(
+        {},
+        'file:///$bunfs/root/gbrain/src/commands/doctor.ts',
+        [executable],
+      );
+      expect(resolved).toBe(fixturePath);
+      rmSync(root, { recursive: true, force: true });
+    } finally {
+      cleanup();
+    }
+  });
+
   it('returns null when neither cwd nor module path can resolve the default fixture', () => {
     try {
       const fixturePath = resolveWhoknowsFixturePath({}, 'not-a-file-url');
