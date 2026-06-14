@@ -148,7 +148,19 @@ describe('whoknows_health doctor check', () => {
     }
   });
 
-  it('returns null when the default fixture path cannot be resolved', () => {
+  it('resolves from cwd when bundled module URL is not source-like', async () => {
+    try {
+      await withEnv({ GBRAIN_WHOKNOWS_FIXTURE_PATH: undefined }, async () => {
+        process.chdir(savedCwd);
+        const fixturePath = resolveWhoknowsFixturePath({}, 'not-a-file-url');
+        expect(fixturePath).toContain('test/fixtures/whoknows-eval.jsonl');
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('returns null when neither cwd nor module path can resolve the default fixture', () => {
     try {
       const fixturePath = resolveWhoknowsFixturePath({}, 'not-a-file-url');
       expect(fixturePath).toBeNull();

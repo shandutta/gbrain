@@ -247,14 +247,27 @@ export function resolveWhoknowsFixturePath(
       : resolvePath(process.cwd(), env.GBRAIN_WHOKNOWS_FIXTURE_PATH);
   }
 
-  try {
-    let dir = dirname(fileURLToPath(moduleUrl));
+  const searchFrom = (startDir: string): string | null => {
+    let dir = startDir;
     for (let i = 0; i < 10; i++) {
       if (isGbrainSourceRoot(dir)) return join(dir, WHOKNOWS_FIXTURE_RELATIVE_PATH);
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
     }
+    return null;
+  };
+
+  // Source-mode runs resolve from import.meta.url. Compiled single-binary runs
+  // may not retain a source-like module URL, so also try cwd. This keeps
+  // `cd /path/to/gbrain && ./bin/gbrain doctor` healthy without requiring an
+  // environment override.
+  const cwdResolved = searchFrom(process.cwd());
+  if (cwdResolved) return cwdResolved;
+
+  try {
+    const moduleResolved = searchFrom(dirname(fileURLToPath(moduleUrl)));
+    if (moduleResolved) return moduleResolved;
   } catch {
     // Some bundlers/runtimes may not expose a normal file: import URL.
     // Doctor should surface an override hint instead of fabricating a path.
