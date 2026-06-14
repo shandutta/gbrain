@@ -45,6 +45,19 @@ async function safeCount(engine: BrainEngine, sql: string, params: unknown[] = [
   }
 }
 
+/** Returns a string column from all result rows; returns [] on throw. */
+async function safeStringRows(engine: BrainEngine, sql: string, col: string, params: unknown[] = []): Promise<string[]> {
+  try {
+    const result = await engine.executeRaw(sql, params);
+    const rows =
+      (result as { rows?: Array<Record<string, unknown>> } | undefined)?.rows ??
+      (result as Array<Record<string, unknown>> | undefined) ?? [];
+    return rows.map((r) => String((r as Record<string, unknown>)[col] ?? '')).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * embed_staleness: count of chunks awaiting embedding.
  *
@@ -479,10 +492,16 @@ export async function checkPackUpgradeAvailable(
  * positives on custom packs (compares to actual pack declaration count,
  * not a hardcoded threshold).
  */
+const GBRAIN_BASE_V2_TYPE_FALLBACK = new Set([
+  'person', 'company', 'media', 'tweet', 'social-digest', 'analysis', 'atom',
+  'concept', 'source', 'deal', 'email', 'slack', 'writing', 'project', 'note',
+]);
+
 export async function checkTypeProliferation(
   engine: BrainEngine,
 ): Promise<OnboardCheckResult> {
-  let declared = 15;  // fallback to gbrain-base-v2 default if pack unavailable
+  let declared = GBRAIN_BASE_V2_TYPE_FALLBACK.size;  // fallback to gbrain-base-v2 default if pack unavailable
+  let packTypeSet: Set<string> | null = new Set(GBRAIN_BASE_V2_TYPE_FALLBACK);
   try {
     const { loadActivePack } = await import('../schema-pack/load-active.ts');
     let dbConfig: string | undefined;
@@ -491,19 +510,32 @@ export async function checkTypeProliferation(
     } catch { /* tolerate pre-config brains */ }
     const active = await loadActivePack({ cfg: null, remote: false, dbConfig })
       .catch(() => null);
-    if (active) declared = active.manifest.page_types.length;
+    if (active) {
+      declared = active.manifest.page_types.length;
+      packTypeSet = new Set(active.manifest.page_types.map((pt) => pt.name));
+    }
   } catch {
     // Use fallback.
   }
-  const n = await safeCount(
-    engine,
-    `SELECT COUNT(DISTINCT p.type) AS count
+  const scopedTypeSql = `SELECT DISTINCT p.type AS type
      FROM pages p
      LEFT JOIN sources s ON s.id = p.source_id
      WHERE p.deleted_at IS NULL
        AND p.type IS NOT NULL
-       AND COALESCE(s.config->>'doctor_scoreable', CASE WHEN p.source_id = 'default' THEN 'true' ELSE 'false' END) = 'true'`,
-  );
+       AND COALESCE(s.config->>'doctor_scoreable', CASE WHEN p.source_id = 'default' THEN 'true' ELSE 'false' END) = 'true'`;
+  const allTypes = await safeStringRows(engine, scopedTypeSql, 'type');
+  const n = allTypes.length;
+
+  // Enrich messages with out-of-pack type names when available, so the operator knows what
+  // to canonicalize without a separate `gbrain schema stats` call.
+  const outOfPackTypes: string[] = packTypeSet
+    ? allTypes.filter((t) => !packTypeSet!.has(t)).sort()
+    : [];
+
+  const outOfPackSuffix = outOfPackTypes.length > 0
+    ? ` Out-of-pack types: ${outOfPackTypes.join(', ')}.`
+    : '';
+
   const warn = declared + 5;
   const fail = declared * 2;
   if (n > fail) {
@@ -512,7 +544,7 @@ export async function checkTypeProliferation(
         name: 'type_proliferation',
         status: 'fail',
         message:
-          `${n} distinct page types (pack declares ${declared}). ` +
+          `${n} distinct page types (pack declares ${declared}).${outOfPackSuffix} ` +
           `Run \`gbrain onboard --check --explain\` to preview a pack upgrade ` +
           `or define a custom pack with mapping_rules.`,
       },
@@ -524,7 +556,7 @@ export async function checkTypeProliferation(
       check: {
         name: 'type_proliferation',
         status: 'warn',
-        message: `${n} distinct page types vs ${declared} declared in pack — consider unification.`,
+        message: `${n} distinct page types vs ${declared} declared in pack — consider unification.${outOfPackSuffix}`,
       },
       remediations: [],
     };
@@ -533,7 +565,7 @@ export async function checkTypeProliferation(
     check: {
       name: 'type_proliferation',
       status: 'ok',
-      message: `${n} distinct typed values (pack declares ${declared})`,
+      message: `${n} distinct typed values (pack declares ${declared})${outOfPackSuffix}`,
     },
     remediations: [],
   };

@@ -1548,7 +1548,18 @@ export async function registerBuiltinHandlers(
   });
 
   worker.register('extract', async (job) => {
-    const { runExtractCore } = await import('./extract.ts');
+    const { runExtract, runExtractCore } = await import('./extract.ts');
+    if (job.data.stale === true) {
+      const args = ['--stale'];
+      if (typeof job.data.sourceId === 'string') {
+        args.push('--source-id', job.data.sourceId);
+      }
+      if (job.data.catchUp === true) args.push('--catch-up');
+      if (job.data.dryRun === true) args.push('--dry-run');
+      if (job.data.json === true) args.push('--json');
+      await runExtract(engine, args);
+      return { extracted: true, stale: true, source_id: job.data.sourceId ?? null };
+    }
     const mode = (typeof job.data.mode === 'string' && ['links', 'timeline', 'all'].includes(job.data.mode))
       ? (job.data.mode as 'links' | 'timeline' | 'all')
       : 'all';

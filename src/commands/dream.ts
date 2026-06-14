@@ -419,9 +419,11 @@ function printHuman(report: CycleReport) {
     t.pages_extracted > 0 || t.pages_embedded > 0 || t.orphans_found > 0 ||
     t.transcripts_processed > 0 || t.synth_pages_written > 0 || t.patterns_written > 0;
   if (hasTotals) {
+    const islandedCount = t.fully_islanded_found ?? 0;
     console.log(
       `  totals: lint=${t.lint_fixes} backlinks=${t.backlinks_added} synced=${t.pages_synced} ` +
-      `extracted=${t.pages_extracted} embedded=${t.pages_embedded} orphans=${t.orphans_found} ` +
+      `extracted=${t.pages_extracted} embedded=${t.pages_embedded} ` +
+      `orphans_zero_inbound=${t.orphans_found} orphans_fully_islanded=${islandedCount} ` +
       `synth_transcripts=${t.transcripts_processed} synth_pages=${t.synth_pages_written} ` +
       `patterns=${t.patterns_written}`,
     );

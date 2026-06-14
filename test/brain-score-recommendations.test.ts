@@ -119,7 +119,25 @@ describe('computeRecommendations', () => {
     expect(recs.find((r) => r.id === 'embed.stale')).toBeUndefined();
   });
 
-  test('stale pages + dead links produce sync + backlinks + extract', () => {
+  test('stale pages emits extract.stale (source-scoped), NOT sync.repo or extract.all', () => {
+    const health = makeHealth({ stale_pages: 25, brain_score: 70 });
+    const recs = computeRecommendations(health, {
+      repoPath: '/brain',
+      embeddingProviderConfigured: true,
+      sourceId: 'default',
+    });
+    const ids = recs.map((r) => r.id);
+    expect(ids).toContain('extract.stale');
+    expect(ids).not.toContain('sync.repo');
+    expect(ids).not.toContain('extract.all');
+    const extract = recs.find((r) => r.id === 'extract.stale')!;
+    expect(extract.job).toBe('extract');
+    expect(extract.params.stale).toBe(true);
+    expect(extract.params.sourceId).toBe('default');
+    expect(extract.params.catchUp).toBe(true);
+  });
+
+  test('stale pages + dead links produce extract.stale + backlinks (no sync.repo)', () => {
     const health = makeHealth({
       stale_pages: 25,
       dead_links: 8,
@@ -127,26 +145,59 @@ describe('computeRecommendations', () => {
     });
     const recs = computeRecommendations(health, { repoPath: '/brain', embeddingProviderConfigured: true });
     const ids = recs.map((r) => r.id);
-    expect(ids).toContain('sync.repo');
+    expect(ids).toContain('extract.stale');
     expect(ids).toContain('backlinks.fix');
-    expect(ids).toContain('extract.all');
+    expect(ids).not.toContain('sync.repo');
+    expect(ids).not.toContain('extract.all');
   });
 
-  test('extract.all depends on sync.repo (D14: stable ids)', () => {
+  test('extract.stale has no depends_on (independent of sync)', () => {
     const health = makeHealth({ stale_pages: 10 });
     const recs = computeRecommendations(health, { repoPath: '/brain', embeddingProviderConfigured: true });
-    const extract = recs.find((r) => r.id === 'extract.all');
-    expect(extract?.depends_on).toContain('sync.repo');
+    const extract = recs.find((r) => r.id === 'extract.stale');
+    expect(extract?.depends_on).toEqual([]);
   });
 
-  test('embed.stale depends on sync.repo when sync also needed', () => {
+  test('extract.stale fires even without repoPath (no sync.repo_path required)', () => {
+    const health = makeHealth({ stale_pages: 10, brain_score: 80 });
+    // no repoPath — extract.stale should still emit
+    const recs = computeRecommendations(health, { embeddingProviderConfigured: true });
+    const ids = recs.map((r) => r.id);
+    expect(ids).toContain('extract.stale');
+    expect(ids).not.toContain('sync.repo');
+  });
+
+  test('extract.stale severity: high when stale_pages > 50, medium otherwise', () => {
+    const high = computeRecommendations(makeHealth({ stale_pages: 51 }), {});
+    expect(high.find((r) => r.id === 'extract.stale')?.severity).toBe('high');
+    const med = computeRecommendations(makeHealth({ stale_pages: 50 }), {});
+    expect(med.find((r) => r.id === 'extract.stale')?.severity).toBe('medium');
+  });
+
+  test('extract.stale uses source from ctx.sourceId (default fallback)', () => {
+    const health = makeHealth({ stale_pages: 5 });
+    const withSource = computeRecommendations(health, { sourceId: 'gstack' });
+    const noSource = computeRecommendations(health, {});
+    const withExtract = withSource.find((r) => r.id === 'extract.stale')!;
+    const noExtract = noSource.find((r) => r.id === 'extract.stale')!;
+    expect(withExtract.params.sourceId).toBe('gstack');
+    expect(noExtract.params.sourceId).toBe('default');
+    // Different source → different idempotency key
+    expect(withExtract.idempotency_key).not.toBe(noExtract.idempotency_key);
+  });
+
+  test('embed.stale depends on extract.stale and is ordered after it when extraction backlog exists', () => {
     const health = makeHealth({
       stale_pages: 10,
       missing_embeddings: 100,
     });
     const recs = computeRecommendations(health, { repoPath: '/brain', embeddingProviderConfigured: true });
+    const ids = recs.map((r) => r.id);
     const embed = recs.find((r) => r.id === 'embed.stale');
-    expect(embed?.depends_on).toContain('sync.repo');
+    expect(embed?.depends_on).toContain('extract.stale');
+    expect(embed?.depends_on).not.toContain('sync.repo');
+    expect(ids.indexOf('extract.stale')).toBeGreaterThanOrEqual(0);
+    expect(ids.indexOf('embed.stale')).toBeGreaterThan(ids.indexOf('extract.stale'));
   });
 
   test('embed.stale has no sync dependency when nothing stale', () => {
@@ -156,10 +207,10 @@ describe('computeRecommendations', () => {
     expect(embed?.depends_on).toEqual([]);
   });
 
-  test('severity ordering: critical before high before medium', () => {
+  test('severity ordering: critical before high before medium when no dependency overrides it', () => {
     const health = makeHealth({
       missing_embeddings: 100,  // critical
-      stale_pages: 80,          // high
+      dead_links: 8,            // high
     });
     const recs = computeRecommendations(health, { repoPath: '/brain', embeddingProviderConfigured: true });
     const critIdx = recs.findIndex((r) => r.severity === 'critical');

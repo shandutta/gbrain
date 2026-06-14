@@ -192,20 +192,24 @@ export function computeRecommendations(
   const source = ctx.sourceId ?? 'default';
 
   // ---------------------------------------------------------------------
-  // sync.repo — fires when sync hasn't run recently OR pages are stale
+  // extract.stale — fires when pages have an extraction backlog (stale_pages
+  // counts rows where updated_at > links_extracted_at). This is a per-source
+  // extraction issue, NOT a sync/repo issue: using sync.repo_path (which may
+  // point to a different source's repo) would misroute the remediation.
+  // Equivalent CLI: gbrain extract --stale --source-id <source> --catch-up
   // ---------------------------------------------------------------------
-  if (ctx.repoPath && health.stale_pages > 0) {
-    const params = { repoPath: ctx.repoPath, sourceId: ctx.sourceId, noEmbed: true };
+  if (health.stale_pages > 0) {
+    const params = { stale: true, sourceId: source, catchUp: true };
     out.push({
-      id: 'sync.repo',
-      job: 'sync',
+      id: 'extract.stale',
+      job: 'extract',
       params,
-      idempotency_key: idemKey(source, 'sync', params),
+      idempotency_key: idemKey(source, 'extract.stale', params),
       severity: health.stale_pages > 50 ? 'high' : 'medium',
       est_seconds: Math.min(600, 30 + health.stale_pages * 0.5),
-      est_usd_cost: 0,  // sync is fs+DB only
+      est_usd_cost: 0,
       depends_on: [],
-      rationale: `${health.stale_pages} stale page${health.stale_pages === 1 ? '' : 's'} on disk`,
+      rationale: `${health.stale_pages} stale page${health.stale_pages === 1 ? '' : 's'} need extraction (source: ${source})`,
       status: 'remediable',
     });
   }
@@ -236,8 +240,8 @@ export function computeRecommendations(
       severity: 'critical',
       est_seconds: Math.min(3600, 5 + health.missing_embeddings * 0.05),
       est_usd_cost,
-      // sync should run first so embed sees fresh pages.
-      depends_on: ctx.repoPath && health.stale_pages > 0 ? ['sync.repo'] : [],
+      // extract.stale should run first when there's an extraction backlog.
+      depends_on: health.stale_pages > 0 ? ['extract.stale'] : [],
       rationale: `${health.missing_embeddings} chunk${health.missing_embeddings === 1 ? '' : 's'} invisible to vector search`,
       status: 'remediable',
     });
@@ -262,27 +266,6 @@ export function computeRecommendations(
     });
   }
 
-  // ---------------------------------------------------------------------
-  // extract.all — runs after sync to materialize links + timeline.
-  // Triggered when sync.repo fires (because sync was set to noEmbed:true,
-  // and noExtract:true after T5 lands → extract job is the materializer).
-  // ---------------------------------------------------------------------
-  if (ctx.repoPath && health.stale_pages > 0) {
-    const params = { mode: 'all', dir: ctx.repoPath };
-    out.push({
-      id: 'extract.all',
-      job: 'extract',
-      params,
-      idempotency_key: idemKey(source, 'extract', params),
-      severity: 'medium',
-      est_seconds: Math.min(600, 30 + health.page_count * 0.01),
-      est_usd_cost: 0,
-      depends_on: ['sync.repo'],
-      rationale: 'Materialize link + timeline edges from fresh pages',
-      status: 'remediable',
-    });
-  }
-
   // v0.41.18.0 (A2 + codex #3): merge caller-supplied extras. Hardcoded
   // entries win on id collision so legacy behavior is preserved when an
   // extra accidentally duplicates a hardcoded id.
@@ -293,15 +276,21 @@ export function computeRecommendations(
     }
   }
 
-  // Sort: severity (critical first), then est_seconds ascending so quick
-  // wins come first within a severity tier.
+  // D14: stable order by dependencies first, then severity; id tie-breaker
+  // for deterministic output. A downstream step (for example embed.stale)
+  // must not be scheduled before the extraction step it declares in depends_on.
   const sevRank: Record<RemediationSeverity, number> = {
-    critical: 0, high: 1, medium: 2, low: 3,
+    critical: 0,
+    high: 1,
+    medium: 2,
+    low: 3,
   };
   out.sort((a, b) => {
+    if ((a.depends_on ?? []).includes(b.id)) return 1;
+    if ((b.depends_on ?? []).includes(a.id)) return -1;
     const sd = sevRank[a.severity] - sevRank[b.severity];
     if (sd !== 0) return sd;
-    return a.est_seconds - b.est_seconds;
+    return a.id.localeCompare(b.id);
   });
 
   return out;

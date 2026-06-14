@@ -344,6 +344,8 @@ export interface CycleReport {
     pages_extracted: number;
     pages_embedded: number;
     orphans_found: number;
+    /** fully-islanded orphans: no inbound AND no outbound (matches BrainHealth.orphan_pages). */
+    fully_islanded_found: number;
     /** v0.23: number of transcripts the synthesize phase processed (judged + dispatched). */
     transcripts_processed: number;
     /** v0.23: number of new reflection/original/people pages written by synthesize. */
@@ -1349,13 +1351,35 @@ async function runPhaseOrphans(engine: BrainEngine): Promise<PhaseResult> {
     // graph fell apart" signal). total_pages=0 is a defensive 'ok'.
     const status: PhaseStatus =
       result.total_pages > 0 && count / result.total_pages > 0.5 ? 'warn' : 'ok';
+
+    // Targeted islanded count: no inbound AND no outbound (matches BrainHealth.orphan_pages).
+    // Separate from zero-inbound-only (`gbrain orphans`) — a page with one outgoing link
+    // clears the health metric but still appears in `gbrain orphans`.
+    let fully_islanded_count = 0;
+    try {
+      const islandedResult = await engine.executeRaw(
+        `SELECT count(*) AS count FROM pages WHERE deleted_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM links WHERE to_page_id = pages.id)
+         AND NOT EXISTS (SELECT 1 FROM links WHERE from_page_id = pages.id)`,
+        [],
+      );
+      const islandedRows =
+        (islandedResult as { rows?: Array<Record<string, unknown>> })?.rows ??
+        (islandedResult as Array<Record<string, unknown>>) ?? [];
+      const raw = (islandedRows[0] as Record<string, unknown> | undefined)?.count ?? 0;
+      const n = Number(raw);
+      fully_islanded_count = Number.isFinite(n) ? n : 0;
+    } catch { /* tolerate pre-schema brains */ }
+
     return {
       phase: 'orphans',
       status,
       duration_ms: 0,
       summary: `${count} orphan page(s) out of ${result.total_pages} total`,
       details: {
-        total_orphans: count,
+        total_orphans: count,         // back-compat key; same as zero_inbound_count
+        zero_inbound_count: count,
+        fully_islanded_count,
         total_pages: result.total_pages,
         excluded: result.excluded,
       },
@@ -2338,6 +2362,7 @@ function emptyTotals(): CycleReport['totals'] {
     pages_extracted: 0,
     pages_embedded: 0,
     orphans_found: 0,
+    fully_islanded_found: 0,
     transcripts_processed: 0,
     synth_pages_written: 0,
     patterns_written: 0,
@@ -2373,6 +2398,7 @@ function extractTotals(phases: PhaseResult[]): CycleReport['totals'] {
         : Number(p.details.embedded ?? 0);
     } else if (p.phase === 'orphans' && p.details) {
       t.orphans_found = Number(p.details.total_orphans ?? 0);
+      t.fully_islanded_found = Number(p.details.fully_islanded_count ?? 0);
     } else if (p.phase === 'synthesize' && p.details) {
       t.transcripts_processed = Number(p.details.transcripts_processed ?? 0);
       t.synth_pages_written = Number(p.details.pages_written ?? 0);
