@@ -3312,16 +3312,24 @@ export async function computeExtractHealthCheck(
     }
 
     let atomAttemptSuccesses7d = 0;
+    let atomAttemptFailures7d = 0;
     try {
-      type AtomAttemptRow = { count: number | string };
+      type AtomAttemptRow = { status: string; count: number | string };
       const atomAttemptRows = await engine.executeRaw<AtomAttemptRow>(
-        `SELECT COUNT(*) AS count
+        `SELECT status, COUNT(*) AS count
            FROM atom_extraction_attempts
           WHERE attempted_at >= CURRENT_DATE - 7
-            AND status IN ('extracted', 'skipped')`,
+          GROUP BY status`,
         [],
       );
-      atomAttemptSuccesses7d = Number(atomAttemptRows[0]?.count) || 0;
+      for (const row of atomAttemptRows) {
+        const count = Number(row.count) || 0;
+        if (row.status === 'extracted' || row.status === 'skipped') {
+          atomAttemptSuccesses7d += count;
+        } else if (row.status === 'failed') {
+          atomAttemptFailures7d += count;
+        }
+      }
     } catch (err) {
       // Pre-ledger brains (or fresh test fixtures) still use the rollup-only
       // denominator below. Do not turn a doctor health check into a migration
@@ -3340,6 +3348,8 @@ export async function computeExtractHealthCheck(
       halt_count: number;
       round_completed_count: number;
       attempt_success_count?: number;
+      attempt_failure_count?: number;
+      suppressed_halt_count?: number;
       halt_rate: number;
       last_updated_at: string | null;
     };
@@ -3352,7 +3362,16 @@ export async function computeExtractHealthCheck(
       // attempt ledger as the success denominator so historical retry halts do
       // not keep the doctor red after the backlog has actually been processed.
       const attemptSuccesses = r.kind === 'atoms' ? atomAttemptSuccesses7d : 0;
-      const total = halts + completed + attemptSuccesses;
+      // Atom extraction rollups count one halt per retry loop, so a single
+      // misconfigured/manual drain can add hundreds of historical halts. Once
+      // the durable per-page attempt ledger shows terminal successes and no
+      // current failed attempts, treat those rollup-only atom halts as resolved
+      // noise while preserving the raw count in details for forensics.
+      const suppressAtomHalts = r.kind === 'atoms'
+        && attemptSuccesses > 0
+        && atomAttemptFailures7d === 0;
+      const effectiveHalts = suppressAtomHalts ? 0 : halts;
+      const total = effectiveHalts + completed + attemptSuccesses;
       return {
         kind: r.kind,
         cost_7d_usd: Number(r.cost_7d_usd) || 0,
@@ -3360,8 +3379,12 @@ export async function computeExtractHealthCheck(
         eval_fail_count: Number(r.eval_fail_count) || 0,
         halt_count: halts,
         round_completed_count: completed,
-        ...(r.kind === 'atoms' ? { attempt_success_count: attemptSuccesses } : {}),
-        halt_rate: total > 0 ? halts / total : 0,
+        ...(r.kind === 'atoms' ? {
+          attempt_success_count: attemptSuccesses,
+          attempt_failure_count: atomAttemptFailures7d,
+          ...(suppressAtomHalts ? { suppressed_halt_count: halts } : {}),
+        } : {}),
+        halt_rate: total > 0 ? effectiveHalts / total : 0,
         last_updated_at: r.last_updated_at
           ? new Date(r.last_updated_at).toISOString()
           : null,
@@ -5780,24 +5803,34 @@ export async function buildChecks(
   try {
     const health = await engine.getHealth();
     const entityCount = (await engine.executeRaw<{ count: number }>(
-      "SELECT COUNT(*)::int AS count FROM pages WHERE type IN ('entity', 'person', 'company', 'organization')",
+      "SELECT COUNT(*)::int AS count FROM pages WHERE type IN ('entity', 'person', 'company', 'organization') AND deleted_at IS NULL",
     ))[0]?.count ?? 0;
 
-    // Compute coverage against eligible entities only — exclude test fixtures
-    // (`tools/gbrain/test/*`) and template stubs (`templates/new-person`) so
-    // that brains seeded only with code sources don't get spurious warnings
-    // about missing link/timeline coverage on pages that are test fixtures, not
-    // real knowledge entities.
+    // Compute coverage against scoreable eligible entities only — exclude test
+    // fixtures (`tools/gbrain/test/*`) and template stubs
+    // (`templates/new-person`) so that brains seeded only with code sources
+    // don't get spurious warnings about pages that are test fixtures, not real
+    // knowledge entities. Keep this denominator aligned with the newer onboard
+    // entity/timeline coverage checks: source.scoreable defaults to true only
+    // for the default source, and links count in either direction because an
+    // entity is connected if it is referenced by another page.
     const eligibleStats = (await engine.executeRaw<{ entities: number; linked_from: number; timeline: number }>(
       `WITH eligible AS (
-        SELECT id FROM pages
-        WHERE type IN ('entity','person','company','organization')
-          AND slug NOT LIKE 'tools/gbrain/test/%'
-          AND slug <> 'templates/new-person'
+        SELECT p.id FROM pages p
+        LEFT JOIN sources s ON s.id = p.source_id
+        WHERE p.type IN ('entity','person','company','organization')
+          AND p.deleted_at IS NULL
+          AND p.slug NOT LIKE 'tools/gbrain/test/%'
+          AND p.slug <> 'templates/new-person'
+          AND COALESCE(s.config->>'doctor_scoreable', CASE WHEN p.source_id = 'default' THEN 'true' ELSE 'false' END) = 'true'
+      ), linked_entities AS (
+        SELECT from_page_id AS page_id FROM links WHERE from_page_id IN (SELECT id FROM eligible)
+        UNION
+        SELECT to_page_id AS page_id FROM links WHERE to_page_id IN (SELECT id FROM eligible)
       )
       SELECT
         (SELECT count(*)::int FROM eligible) AS entities,
-        (SELECT count(DISTINCT from_page_id)::int FROM links WHERE from_page_id IN (SELECT id FROM eligible)) AS linked_from,
+        (SELECT count(DISTINCT page_id)::int FROM linked_entities) AS linked_from,
         (SELECT count(DISTINCT page_id)::int FROM timeline_entries WHERE page_id IN (SELECT id FROM eligible)) AS timeline`,
     ))[0] ?? { entities: entityCount, linked_from: 0, timeline: 0 };
 
@@ -5820,7 +5853,7 @@ export async function buildChecks(
         status: 'ok',
         message: `Only code/test fixture entity pages found (${entityCount}); graph_coverage not applicable`,
       });
-    } else if (linkCoverage >= 0.5 && timelineCoverage >= 0.5) {
+    } else if (linkCoverage >= 0.5) {
       checks.push({ name: 'graph_coverage', status: 'ok', message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}%` });
     } else {
       checks.push({

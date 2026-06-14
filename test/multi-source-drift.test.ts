@@ -171,4 +171,19 @@ describe('findMisroutedPages — heuristic correctness', () => {
     expect(result.count).toBe(1);
     expect(result.sample[0].slug).toBe('topics/mdx-page');
   });
+
+  test('case 8: gstack-code wiki mirror paths are skipped as default-brain mirrors', async () => {
+    const root = makeTmpRoot('case8');
+    seedFile(root, 'wiki/personal/patterns/mirrored-default-page.md');
+    seedFile(root, 'projects/smart-home/mirrored-project.md');
+    seedFile(root, 'docs/real-doc.md');
+
+    await engine.putPage('wiki/personal/patterns/mirrored-default-page', { type: 'concept', title: 'Mirror', compiled_truth: '.' });
+    await engine.putPage('projects/smart-home/mirrored-project', { type: 'project', title: 'Mirrored project', compiled_truth: '.' });
+    await engine.putPage('docs/real-doc', { type: 'note', title: 'Real doc', compiled_truth: '.' });
+
+    const result = await findMisroutedPages(engine, [{ id: 'gstack-code-case8', local_path: root }]);
+    expect(result.count).toBe(1);
+    expect(result.sample.map(s => s.slug)).toEqual(['docs/real-doc']);
+  });
 });

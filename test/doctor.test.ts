@@ -220,6 +220,15 @@ describe('doctor command', () => {
     expect(src).not.toContain('gbrain timeline-extract');
   });
 
+  test('graph_coverage uses scoreable sources and bidirectional links', async () => {
+    const fs = await import('fs');
+    const src = fs.readFileSync('src/commands/doctor.ts', 'utf8');
+    expect(src).toContain("LEFT JOIN sources s ON s.id = p.source_id");
+    expect(src).toContain("COALESCE(s.config->>'doctor_scoreable', CASE WHEN p.source_id = 'default' THEN 'true' ELSE 'false' END) = 'true'");
+    expect(src).toContain('SELECT to_page_id AS page_id FROM links WHERE to_page_id IN (SELECT id FROM eligible)');
+    expect(src).not.toContain('linkCoverage >= 0.5 && timelineCoverage >= 0.5');
+  });
+
   // v0.32 — takes_weight_grid pure-helper export.
   // Codex review #7 demanded the check be extracted as a pure function so
   // tests target it directly with stubbed engines instead of running the

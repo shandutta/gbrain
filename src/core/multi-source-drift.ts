@@ -58,6 +58,13 @@ export interface MisroutedResult {
 const DEFAULT_FILE_LIMIT = 10_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const SAMPLE_LIMIT = 5;
+const CODE_SOURCE_BRAIN_MIRROR_PREFIXES = ['wiki/', 'projects/'];
+
+function isCodeSourceBrainMirrorPath(sourceId: string, relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, '/');
+  return sourceId.startsWith('gstack-code-')
+    && CODE_SOURCE_BRAIN_MIRROR_PREFIXES.some(prefix => normalized.startsWith(prefix));
+}
 
 /**
  * Walk a directory tree for `.md` + `.mdx` files. Skips dotfiles (`.git`),
@@ -197,7 +204,13 @@ export async function findMisroutedPages(
     if (files.length === 0) continue;
 
     // Convert FS paths to canonical slugs (lowercased, extension stripped).
-    const slugs = Array.from(new Set(files.map(f => pathToSlug(f.relPath))));
+    // gstack-code sources may contain a checked-in `wiki/` mirror of the
+    // operator's default brain. Those pages are intentionally owned by the
+    // default source; treating a partial mirror as source drift creates noisy
+    // false positives after full sync reconciles removed mirror files.
+    const slugs = Array.from(new Set(files
+      .filter(f => !isCodeSourceBrainMirrorPath(src.id, f.relPath))
+      .map(f => pathToSlug(f.relPath))));
     const existenceMap = await batchProbeExistence(engine, slugs, src.id);
 
     for (const slug of slugs) {

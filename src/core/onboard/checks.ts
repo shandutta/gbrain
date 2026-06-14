@@ -265,12 +265,22 @@ export async function checkTimelineCoverage(
   const remediations: RemediationStep[] = [];
   let status: 'ok' | 'warn' | 'fail' = 'ok';
   let message: string;
+  const missingTimelineCount = Math.max(0, sampleSize - withTimelineCount);
+  // Absolute residual guard: timeline coverage is a quality signal, not a
+  // command to manufacture weak chronology. On small/personal brains a handful
+  // of lightweight contact/profile pages can keep percentage coverage under
+  // 90% even after deterministic timeline extraction creates zero new entries.
+  // Keep that state green and descriptive; warn only when the residual is large
+  // enough to represent a real backlog worth extracting from meetings/notes.
+  const residualBelowActionThreshold = !useSample && coverage >= 0.5 && missingTimelineCount <= 10;
 
   // v0.41.18.0: warn-only, never fail. Same posture as entity_link_coverage —
   // the recommendation still surfaces in onboard's plan, but doctor exit
   // code doesn't flip on a fresh brain.
   if (coverage >= 0.9) {
     message = `Coverage ${pct}% ± ${ciPct}%${sampleNote}`;
+  } else if (residualBelowActionThreshold) {
+    message = `Coverage ${pct}% ± ${ciPct}% (${missingTimelineCount} entity page(s) without timelines; below action threshold)${sampleNote}`;
   } else if (coverage >= 0.7) {
     status = 'warn';
     message = `Coverage ${pct}% ± ${ciPct}% (target 90%)${sampleNote}`;
@@ -281,7 +291,7 @@ export async function checkTimelineCoverage(
       severity: 'medium',
       est_seconds: 240,
       est_usd_cost: 0,
-      rationale: `Timeline coverage at ${pct}%; meeting-derived entries lift it`,
+      rationale: `Timeline coverage at ${pct}%; N=${missingTimelineCount} entity page(s) still lack timeline entries`,
       status: 'remediable',
     }));
   } else {
@@ -294,7 +304,7 @@ export async function checkTimelineCoverage(
       severity: 'high',
       est_seconds: 480,
       est_usd_cost: 0,
-      rationale: `Timeline coverage at ${pct}%; meeting-derived entries lift it`,
+      rationale: `Timeline coverage at ${pct}%; N=${missingTimelineCount} entity page(s) still lack timeline entries`,
       status: 'remediable',
     }));
   }
