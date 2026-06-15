@@ -1349,10 +1349,24 @@ export interface BrainHealth {
   no_orphans_score: number;          // 0-15
   no_dead_links_score: number;       // 0-10
   /**
+   * No-inbound link ratio for the default source. Surfaces the raw bookmark /
+   * archive / import pressure that `orphan_pages` (islanded) deliberately
+   * excludes — a page with outbound links but no inbound links counts here;
+   * `orphan_pages` does not. Warn at >0.35, fail at >0.70.
+   * Optional: populated by getHealth(); absent on very small brains.
+   */
+  default_source_orphan_ratio?: {
+    no_inbound: number;
+    total_linkable: number;
+    ratio: number;
+    top_domains: Array<{ domain: string; count: number }>;
+    status: 'ok' | 'warn' | 'fail';
+  };
+  /**
    * v0.30.1 (Cherry D7 + Codex C3): explicit migrations diagnostic surface
    * exposed to MCP get_health callers so remote agents can detect a wedged
    * brain WITHOUT shelling SSH + gbrain doctor. Two ledgers (schema +
-   * orchestrator) per Codex T5 namespacing.
+   * orchestrator) per Codex C3 namespacing.
    *
    * `schema_version` ("1") on the parent BrainHealth pins the additive
    * contract — clients should default-handle missing fields and never

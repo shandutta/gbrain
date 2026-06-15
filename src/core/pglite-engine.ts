@@ -4745,6 +4745,57 @@ export class PGLiteEngine implements BrainEngine {
     const noDeadLinksScore = pageCount === 0 ? 10 : Math.round(noDeadLinks * 10);
     const brainScore = embedCoverageScore + linkDensityScore + timelineCoverageScore + noOrphansScore + noDeadLinksScore;
 
+    // Default-source no-inbound ratio (human_graph_health): surfaces pages that
+    // have no wikilinks pointing at them, including those with outbound links.
+    // Distinct from orphan_pages (islanded = no inbound AND no outbound).
+    const { rows: [noInboundRow] } = await this.db.query(`
+      SELECT
+        COUNT(CASE WHEN NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id) THEN 1 END)::int AS no_inbound,
+        COUNT(*)::int AS total_linkable
+      FROM pages p
+      WHERE p.source_id = 'default'
+        AND p.deleted_at IS NULL
+        AND p.slug NOT IN ('_atlas', '_index', '_stats', '_orphans', '_scratch', 'claude')
+        AND p.slug NOT LIKE '%/_index'
+        AND p.slug NOT LIKE '%/log'
+        AND p.slug NOT LIKE '%/raw/%'
+        AND p.slug NOT LIKE 'output/%'
+        AND p.slug NOT LIKE 'dashboards/%'
+        AND p.slug NOT LIKE 'scripts/%'
+        AND p.slug NOT LIKE 'templates/%'
+        AND p.slug NOT LIKE 'openclaw/config/%'
+        AND split_part(p.slug, '/', 1) NOT IN ('scratch', 'thoughts', 'catalog', 'entities')
+    `);
+    const { rows: domainRows } = await this.db.query(`
+      SELECT split_part(slug, '/', 1) AS domain, COUNT(*)::int AS cnt
+      FROM pages p
+      WHERE p.source_id = 'default'
+        AND p.deleted_at IS NULL
+        AND p.slug NOT IN ('_atlas', '_index', '_stats', '_orphans', '_scratch', 'claude')
+        AND p.slug NOT LIKE '%/_index'
+        AND p.slug NOT LIKE '%/log'
+        AND p.slug NOT LIKE '%/raw/%'
+        AND p.slug NOT LIKE 'output/%'
+        AND p.slug NOT LIKE 'dashboards/%'
+        AND p.slug NOT LIKE 'scripts/%'
+        AND p.slug NOT LIKE 'templates/%'
+        AND p.slug NOT LIKE 'openclaw/config/%'
+        AND split_part(p.slug, '/', 1) NOT IN ('scratch', 'thoughts', 'catalog', 'entities')
+        AND NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
+      GROUP BY 1
+      ORDER BY cnt DESC
+      LIMIT 8
+    `);
+    const nib = noInboundRow as Record<string, unknown>;
+    const noInbound = Number(nib.no_inbound ?? 0);
+    const totalLinkable = Number(nib.total_linkable ?? 0);
+    const nibRatio = totalLinkable > 0 ? noInbound / totalLinkable : 0;
+    const nibStatus: 'ok' | 'warn' | 'fail' =
+      nibRatio > 0.70 ? 'fail' : nibRatio > 0.35 ? 'warn' : 'ok';
+    const nibTopDomains = (domainRows as { domain: string; cnt: number }[]).map(
+      row => ({ domain: String(row.domain), count: Number(row.cnt) }),
+    );
+
     return {
       page_count: pageCount,
       embed_coverage: embedCoverage,
@@ -4764,6 +4815,13 @@ export class PGLiteEngine implements BrainEngine {
       timeline_coverage_score: timelineCoverageScore,
       no_orphans_score: noOrphansScore,
       no_dead_links_score: noDeadLinksScore,
+      default_source_orphan_ratio: totalLinkable >= 50 ? {
+        no_inbound: noInbound,
+        total_linkable: totalLinkable,
+        ratio: nibRatio,
+        top_domains: nibTopDomains,
+        status: nibStatus,
+      } : undefined,
     };
   }
 

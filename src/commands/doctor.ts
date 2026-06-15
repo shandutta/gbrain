@@ -5976,6 +5976,63 @@ export async function buildChecks(
     checks.push({ name: 'orphan_ratio', status: 'warn', message: 'Could not check orphan ratio' });
   }
 
+  // 9c. Default-source no-inbound graph health (human_graph_health).
+  //
+  // Separate from orphan_ratio (entity-scoped, brain-wide) and from
+  // orphan_pages (islanded = no inbound AND no outbound). This check
+  // surfaces the raw bookmark/archive/import pressure in source_id='default':
+  // any page with no inbound wikilinks, regardless of whether it links out.
+  // Thresholds: warn >0.35; fail >0.70.  Skip when default source has <50
+  // linkable pages (vacuous signal).
+  progress.heartbeat('default_source_orphan_ratio');
+  try {
+    const { getOrphansData } = await import('./orphans.ts');
+    const dsData = await getOrphansData(engine, { includePseudo: false, sourceId: 'default' });
+    if (dsData.total_linkable < 50) {
+      checks.push({
+        name: 'default_source_orphan_ratio',
+        status: 'ok',
+        message: `Vacuous: default source has only ${dsData.total_linkable} linkable pages. No-inbound check not meaningful at this scale.`,
+      });
+    } else {
+      const ratio = dsData.total_orphans / dsData.total_linkable;
+      const pct = (ratio * 100).toFixed(0);
+      const domainCounts = new Map<string, number>();
+      for (const page of dsData.orphans) {
+        domainCounts.set(page.domain, (domainCounts.get(page.domain) ?? 0) + 1);
+      }
+      const topDomains = [...domainCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([d, n]) => `${d}: ${n}`)
+        .join(', ');
+      const hint =
+        'Run: gbrain orphans --source default   (see the full list). ' +
+        'High no-inbound counts often reflect bookmark/archive imports; review via `gbrain orphans --source default`.';
+      if (ratio > 0.70) {
+        checks.push({
+          name: 'default_source_orphan_ratio',
+          status: 'fail',
+          message: `Default-source no-inbound ratio ${pct}% (${dsData.total_orphans}/${dsData.total_linkable} linkable pages have no inbound links). Top domains: ${topDomains}. ${hint}`,
+        });
+      } else if (ratio > 0.35) {
+        checks.push({
+          name: 'default_source_orphan_ratio',
+          status: 'warn',
+          message: `Default-source no-inbound ratio ${pct}% (${dsData.total_orphans}/${dsData.total_linkable} linkable pages have no inbound links). Top domains: ${topDomains}. ${hint}`,
+        });
+      } else {
+        checks.push({
+          name: 'default_source_orphan_ratio',
+          status: 'ok',
+          message: `Default-source no-inbound ratio ${pct}% (${dsData.total_orphans}/${dsData.total_linkable} linkable pages)`,
+        });
+      }
+    }
+  } catch {
+    checks.push({ name: 'default_source_orphan_ratio', status: 'warn', message: 'Could not check default-source no-inbound ratio' });
+  }
+
   // 10. Integrity sample scan (v0.13 knowledge runtime).
   // Read-only — no network, no writes, no resolver calls. Samples the first
   // 500 pages by slug order and surfaces bare-tweet + dead-link counts as a

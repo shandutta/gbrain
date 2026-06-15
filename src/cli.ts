@@ -918,6 +918,27 @@ export function formatResult(opName: string, result: unknown): string {
           lines.push(`  ${e.slug}: ${e.link_count} links`);
         }
       }
+      const nib = h.default_source_orphan_ratio as {
+        no_inbound: number; total_linkable: number; ratio: number;
+        top_domains: Array<{ domain: string; count: number }>; status: string;
+      } | undefined;
+      if (nib) {
+        const nibPct = (nib.ratio * 100).toFixed(0);
+        const statusTag = nib.status === 'ok' ? '' : ` [${nib.status.toUpperCase()}]`;
+        lines.push(
+          `Default-source no-inbound pages: ${nib.no_inbound}/${nib.total_linkable} (${nibPct}%)${statusTag}`,
+        );
+        if (nib.top_domains.length > 0) {
+          const topStr = nib.top_domains
+            .slice(0, 5)
+            .map(d => `${d.domain}: ${d.count}`)
+            .join(', ');
+          lines.push(`  Top domains: ${topStr}`);
+        }
+        if (nib.status !== 'ok') {
+          lines.push('  Run: gbrain orphans --source default   (see the full list)');
+        }
+      }
       return lines.join('\n') + '\n';
     }
     case 'get_timeline': {

@@ -56,6 +56,7 @@ export type CheckCategory = 'brain' | 'skill' | 'ops' | 'meta';
 export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'abandoned_threads',
   'brain_score',
+  'default_source_orphan_ratio',
   'calibration_freshness',
   'child_table_orphans',
   'content_sanity_audit_recent',
