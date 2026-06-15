@@ -4790,11 +4790,19 @@ export class PGLiteEngine implements BrainEngine {
     const noInbound = Number(nib.no_inbound ?? 0);
     const totalLinkable = Number(nib.total_linkable ?? 0);
     const nibRatio = totalLinkable > 0 ? noInbound / totalLinkable : 0;
-    const nibStatus: 'ok' | 'warn' | 'fail' =
-      nibRatio > 0.70 ? 'fail' : nibRatio > 0.35 ? 'warn' : 'ok';
     const nibTopDomains = (domainRows as { domain: string; cnt: number }[]).map(
       row => ({ domain: String(row.domain), count: Number(row.cnt) }),
     );
+    const substrateDomains = new Set(['bookmarks', 'atoms', 'archive', 'calendar', 'reports', 'sessions', 'raw']);
+    const substrateNoInbound = nibTopDomains
+      .filter(row => substrateDomains.has(row.domain))
+      .reduce((sum, row) => sum + row.count, 0);
+    const nonSubstrateNoInbound = Math.max(0, noInbound - substrateNoInbound);
+    const substrateDominated = noInbound > 0
+      && substrateNoInbound / noInbound >= 0.80
+      && (totalLinkable > 0 ? nonSubstrateNoInbound / totalLinkable : 0) <= 0.35;
+    const nibStatus: 'ok' | 'warn' | 'fail' =
+      substrateDominated ? 'ok' : nibRatio > 0.70 ? 'fail' : nibRatio > 0.35 ? 'warn' : 'ok';
 
     return {
       page_count: pageCount,
