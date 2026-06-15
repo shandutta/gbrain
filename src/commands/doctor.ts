@@ -6009,7 +6009,20 @@ export async function buildChecks(
       const hint =
         'Run: gbrain orphans --source default   (see the full list). ' +
         'High no-inbound counts often reflect bookmark/archive imports; review via `gbrain orphans --source default`.';
-      if (ratio > 0.70) {
+      const substrateDomains = new Set(['bookmarks', 'atoms', 'archive', 'calendar', 'reports', 'sessions', 'raw']);
+      const substrateOrphans = [...domainCounts.entries()]
+        .filter(([domain]) => substrateDomains.has(domain))
+        .reduce((sum, [, count]) => sum + count, 0);
+      const nonSubstrateOrphans = Math.max(0, dsData.total_orphans - substrateOrphans);
+      const nonSubstrateRatio = nonSubstrateOrphans / dsData.total_linkable;
+      const substrateDominated = substrateOrphans / dsData.total_orphans >= 0.80 && nonSubstrateRatio <= 0.35;
+      if (substrateDominated) {
+        checks.push({
+          name: 'default_source_orphan_ratio',
+          status: 'ok',
+          message: `Default-source no-inbound ratio ${pct}% (${dsData.total_orphans}/${dsData.total_linkable}) is substrate-dominated: ${substrateOrphans} bookmark/archive/import page(s), ${nonSubstrateOrphans} non-substrate page(s). Top domains: ${topDomains}. ${hint}`,
+        });
+      } else if (ratio > 0.70) {
         checks.push({
           name: 'default_source_orphan_ratio',
           status: 'fail',
@@ -6917,14 +6930,33 @@ export async function buildChecks(
           `${sid}: ${reasons.map(x => `${x.n} ${x.reason}`).join(', ')}`,
         )
         .join(' | ');
+      let landedFacts24h = 0;
+      if (anyOverThreshold) {
+        const landedRows = await engine.executeRaw<{ n: string | number }>(
+          `SELECT COUNT(*)::text AS n
+           FROM facts
+           WHERE created_at >= now() - INTERVAL '24 hours'
+             AND expired_at IS NULL`,
+        );
+        const rawLanded = landedRows[0]?.n ?? 0;
+        landedFacts24h = typeof rawLanded === 'number' ? rawLanded : parseInt(rawLanded, 10);
+      }
+      const overThresholdReasons = rows
+        .map(r => ({ reason: r.reason, n: typeof r.n === 'number' ? r.n : parseInt(r.n, 10) }))
+        .filter(r => Number.isFinite(r.n) && r.n >= threshold)
+        .map(r => r.reason);
+      const onlyGatewayUnavailableOverThreshold = overThresholdReasons.length > 0 && overThresholdReasons.every(reason => reason === 'gateway_unavailable');
+      const gatewayTransientWithLanding = onlyGatewayUnavailableOverThreshold && landedFacts24h > 0;
       checks.push({
         name: 'facts_extraction_health',
-        status: anyOverThreshold ? 'warn' : 'ok',
-        message: anyOverThreshold
+        status: anyOverThreshold && !gatewayTransientWithLanding ? 'warn' : 'ok',
+        message: anyOverThreshold && !gatewayTransientWithLanding
           ? `Facts:absorb failures over the threshold (${threshold}) in the last 24h: ${summary}. ` +
             `Run \`gbrain recall --since 24h --json\` to inspect what landed; ` +
             `tune the gate via \`gbrain config set facts.absorb_warn_threshold N\`.`
-          : `Facts:absorb activity in last 24h (under threshold ${threshold}): ${summary}.`,
+          : gatewayTransientWithLanding
+            ? `Facts:absorb gateway_unavailable retries exceeded threshold (${threshold}) but ${landedFacts24h} fact(s) landed in the last 24h; treating as transient gateway noise: ${summary}.`
+            : `Facts:absorb activity in last 24h (under threshold ${threshold}): ${summary}.`,
       });
     }
   } catch (err) {
