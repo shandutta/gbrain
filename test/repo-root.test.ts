@@ -265,6 +265,38 @@ describe('findRepoRoot', () => {
     expect(found.source).toBe('install_path');
   });
 
+  it('doctor mode prefers bundled skills over incidental cwd skills', () => {
+    // Hermes/no-agent cron runs from ~/.hermes/scripts; walking upward finds
+    // ~/.hermes/skills first. That is useful for check-resolvable, but full
+    // `gbrain doctor` should report GBrain's own installed skill health, not
+    // fail because the operator happened to run it under another tool's skill
+    // tree. The doctor-only option keeps write paths and check-resolvable
+    // behavior unchanged while making doctor cwd-independent.
+    const cwdOwner = scratch();
+    const incidentalCwd = join(cwdOwner, '.hermes', 'scripts');
+    mkdirSync(incidentalCwd, { recursive: true });
+    seedSkillsDir(join(cwdOwner, '.hermes', 'skills'));
+
+    const root = scratch();
+    seedRepo(root);
+    const fakeExecutable = join(root, 'bin', 'gbrain');
+    mkdirSync(join(root, 'bin'), { recursive: true });
+    writeFileSync(fakeExecutable, 'fake binary');
+
+    const normal = autoDetectSkillsDirReadOnly(incidentalCwd, {}, ['file:///$bunfs/root/gbrain/src/core/repo-root.ts', fakeExecutable]);
+    expect(normal.dir).toBe(join(cwdOwner, '.hermes', 'skills'));
+    expect(normal.source).toBe('cwd_walk_up');
+
+    const doctor = autoDetectSkillsDirReadOnly(
+      incidentalCwd,
+      {},
+      ['file:///$bunfs/root/gbrain/src/core/repo-root.ts', fakeExecutable],
+      { preferInstallPath: true },
+    );
+    expect(doctor.dir).toBe(join(root, 'skills'));
+    expect(doctor.source).toBe('install_path');
+  });
+
   it('v0.31.7 D3-6: AUTO_DETECT_HINT documents tier-0 GBRAIN_SKILLS_DIR', () => {
     // Hint string is what users see when auto-detect fails — must list the
     // tier-0 explicit override so they know to set it.

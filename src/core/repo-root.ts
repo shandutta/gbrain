@@ -52,6 +52,16 @@ export interface SkillsDirDetection {
   source: SkillsDirSource | null;
 }
 
+export interface ReadOnlySkillsDirDetectionOptions {
+  /**
+   * Doctor should report GBrain's own bundled skill health even when launched
+   * from under another tool's incidental skills/ tree (e.g. ~/.hermes/scripts).
+   * Leave false for check-resolvable/routing-eval so workspace-local skills
+   * remain the default target.
+   */
+  preferInstallPath?: boolean;
+}
+
 /**
  * Given a workspace root, resolve where the skills directory should
  * live. Returns the skills dir + the specific source variant. Returns
@@ -201,6 +211,33 @@ function isGbrainRepoRoot(dir: string): boolean {
   );
 }
 
+function resolveInstallPathSkillsDir(installPathCandidates?: string[]): SkillsDirDetection {
+  // Tier-5 install-path fallback: walk up from the installed module path
+  // AND the executable path. In source-mode `import.meta.url` points back
+  // at `src/core/repo-root.ts`; in Bun's compiled single-file binary it can
+  // point into an in-memory /$bunfs path that has no adjacent `skills/`.
+  // The compiled executable path (`process.execPath`) still sits under the
+  // install tree (for example `<repo>/bin/gbrain`), so check both. Gate every
+  // candidate with isGbrainRepoRoot so we don't false-positive when the path
+  // lives inside an unrelated repo (e.g., a monorepo that vendored gbrain in
+  // a subdir).
+  const candidates = installPathCandidates ?? [import.meta.url, process.execPath];
+  for (const candidate of candidates) {
+    try {
+      const start = candidate.startsWith('file:') ? fileURLToPath(candidate) : candidate;
+      const installRoot = findRepoRoot(start);
+      if (installRoot && isGbrainRepoRoot(installRoot)) {
+        return { dir: join(installRoot, 'skills'), source: 'install_path' };
+      }
+    } catch {
+      // fileURLToPath can throw on malformed import.meta.url (rare; some
+      // bundlers/runtimes). Try the next candidate before giving up.
+    }
+  }
+
+  return { dir: null, source: null };
+}
+
 /**
  * Read-only skills-dir detection (v0.31.7). Wraps `autoDetectSkillsDir` and
  * adds an install-path fallback when the primary detection returns null —
@@ -226,32 +263,18 @@ export function autoDetectSkillsDirReadOnly(
   startDir: string = process.cwd(),
   env: NodeJS.ProcessEnv = process.env,
   installPathCandidates?: string[],
+  options: ReadOnlySkillsDirDetectionOptions = {},
 ): SkillsDirDetection {
+  if (options.preferInstallPath && !env.GBRAIN_SKILLS_DIR && !env.OPENCLAW_WORKSPACE) {
+    const install = resolveInstallPathSkillsDir(installPathCandidates);
+    if (install.dir) return install;
+  }
+
   const primary = autoDetectSkillsDir(startDir, env);
   if (primary.dir) return primary;
 
-  // Tier-5 install-path fallback: walk up from the installed module path
-  // AND the executable path. In source-mode `import.meta.url` points back
-  // at `src/core/repo-root.ts`; in Bun's compiled single-file binary it can
-  // point into an in-memory /$bunfs path that has no adjacent `skills/`.
-  // The compiled executable path (`process.execPath`) still sits under the
-  // install tree (for example `<repo>/bin/gbrain`), so check both. Gate every
-  // candidate with isGbrainRepoRoot so we don't false-positive when the path
-  // lives inside an unrelated repo (e.g., a monorepo that vendored gbrain in
-  // a subdir).
-  const candidates = installPathCandidates ?? [import.meta.url, process.execPath];
-  for (const candidate of candidates) {
-    try {
-      const start = candidate.startsWith('file:') ? fileURLToPath(candidate) : candidate;
-      const installRoot = findRepoRoot(start);
-      if (installRoot && isGbrainRepoRoot(installRoot)) {
-        return { dir: join(installRoot, 'skills'), source: 'install_path' };
-      }
-    } catch {
-      // fileURLToPath can throw on malformed import.meta.url (rare; some
-      // bundlers/runtimes). Try the next candidate before giving up.
-    }
-  }
+  const install = resolveInstallPathSkillsDir(installPathCandidates);
+  if (install.dir) return install;
 
   return primary; // null detection, source: null
 }

@@ -4254,7 +4254,9 @@ export async function buildChecks(
   // fallback so a hosted-CLI install run from `~` (e.g., `bun install -g
   // github:garrytan/gbrain && cd ~ && gbrain doctor`) can still find the
   // bundled skills/ dir without warning.
-  const detected = scope === 'all' ? autoDetectSkillsDirReadOnly() : { dir: null, source: 'none' as const };
+  const detected = scope === 'all'
+    ? autoDetectSkillsDirReadOnly(process.cwd(), process.env, undefined, { preferInstallPath: true })
+    : { dir: null, source: 'none' as const };
   const skillsDir = detected.dir;
   if (scope === 'all' && skillsDir) {
 
