@@ -65,3 +65,23 @@ describe('formatResult — volunteer_context', () => {
     expect(out).toContain('no volunteer events in the window');
   });
 });
+
+describe('formatResult — get_health', () => {
+  test('qualifies orphan_pages so it is not confused with Obsidian-visible no-inbound pages', () => {
+    const out = formatResult('get_health', {
+      page_count: 10,
+      embed_coverage: 1,
+      missing_embeddings: 0,
+      stale_pages: 0,
+      orphan_pages: 0,
+      brain_score: 100,
+      dead_links: 0,
+      link_coverage: 1,
+      timeline_coverage: 1,
+      most_connected: [],
+    });
+
+    expect(out).toContain('Orphan pages (islanded curated pages): 0');
+    expect(out).not.toContain('Orphan pages: 0');
+  });
+});

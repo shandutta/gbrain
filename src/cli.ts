@@ -904,7 +904,7 @@ export function formatResult(opName: string, result: unknown): string {
         `Embed coverage: ${(h.embed_coverage * 100).toFixed(1)}%`,
         `Missing embeddings: ${h.missing_embeddings}`,
         `Stale pages: ${h.stale_pages}`,
-        `Orphan pages: ${h.orphan_pages}`,
+        `Orphan pages (islanded curated pages): ${h.orphan_pages}`,
       ];
       if (h.link_coverage !== undefined) {
         lines.push(`Link coverage (entities): ${(h.link_coverage * 100).toFixed(1)}%`);
